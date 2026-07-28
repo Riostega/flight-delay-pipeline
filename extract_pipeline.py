@@ -30,9 +30,33 @@ def fetch_flights():
         print(data)
         return data
 
-    
 
-def upload_to_s3(data):
+def fetch_weather():
+    load_dotenv()
+
+    api_key = os.getenv("WEATHER_API_KEY")
+
+    url = "https://api.openweathermap.org/data/2.5/weather"
+
+    params = {
+        "lat": 41.9742,
+        "lon": -87.9073,
+        "appid": api_key,
+        "units": "imperial"
+    }
+
+    response = requests.get(url, params = params)
+
+    if response.status_code != 200: 
+        print(f"Request failed: {response.status_code} {response.text}")
+        return None
+    else:
+        data = response.json()
+        print(data)
+        return data
+
+
+def upload_to_s3(data, prefix):
     load_dotenv()
 
     s3 = boto3.client(
@@ -45,7 +69,7 @@ def upload_to_s3(data):
 
     s3.put_object(
         Bucket=os.getenv("S3_BUCKET_NAME"),
-        Key=f"raw/flights/{now.strftime('%Y-%m-%d')}/{now.strftime('%H%M%S')}.json",
+        Key=f"{prefix}/{now.strftime('%Y-%m-%d')}/{now.strftime('%H%M%S')}.json",
         Body=json.dumps(data)
     )
 
@@ -53,5 +77,8 @@ def upload_to_s3(data):
 
 if __name__ =="__main__":
     flights = fetch_flights()
-    if flights:
-        upload_to_s3(flights)
+    weather = fetch_weather()
+    if flights and weather:
+        upload_to_s3(flights, prefix = "raw/flights")
+        upload_to_s3(weather, prefix = "raw/weather")
+        
