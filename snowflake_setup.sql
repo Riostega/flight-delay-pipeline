@@ -22,7 +22,7 @@ CREATE OR REPLACE STAGE raw_flights_stage
   FILE_FORMAT = flight_pipeline_json_format;
 
 -- 3a. Staging table — holds raw flight JSON, one row per file
-CREATE OR REPLACE TABLE stg_flights_raw (
+CREATE TABLE IF NOT EXISTS stg_flights_raw (
   raw_data VARIANT
 );
 
@@ -40,7 +40,7 @@ CREATE OR REPLACE STAGE raw_weather_stage
   FILE_FORMAT = flight_pipeline_json_format;
 
 -- 3b. Staging table — holds raw weather JSON, one row per file
-CREATE OR REPLACE TABLE stg_weather_raw (
+CREATE TABLE IF NOT EXISTS stg_weather_raw (
   raw_data VARIANT
 );
 

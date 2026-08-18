@@ -1,0 +1,9 @@
+version: 2
+
+sources:
+  - name: raw
+    database: FLIGHT_DELAY_PIPELINE
+    schema: PUBLIC
+    tables:
+      - name: stg_flights_raw
+      - name: stg_weather_raw
