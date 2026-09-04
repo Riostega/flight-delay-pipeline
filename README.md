@@ -136,7 +136,7 @@ aircraft appeared under nine different airline flight numbers.
 | Land (S3) | Complete |
 | Load (Snowflake) | Complete |
 | Transform (dbt) | Complete — staging models, airport dimension, fact table, 19 passing tests |
-| Orchestrate (Airflow) | In progress |
+| Orchestrate (Airflow) | Complete — two DAGs on decoupled schedules, verified end to end |
 | Analysis | Pending data accumulation |
 
 ## Setup
@@ -191,6 +191,10 @@ extract_pipeline.py          Extraction and S3 landing (flights + weather)
 snowflake_setup.sql          Warehouse, database, stages, staging tables, COPY INTO
 run_snowflake_setup.py       Executes the above statement-by-statement, injecting secrets
 test_snowflake.py            Connection smoke test
+
+dags/                        Airflow DAG definitions
+  flight_pipeline_daily.py   extract -> load -> dbt run -> dbt test
+  weather_hourly.py          weather collection on its own schedule
 
 flight_delay_pipeline/       dbt project
   models/staging/            sources.yml, stg_flights, stg_weather
