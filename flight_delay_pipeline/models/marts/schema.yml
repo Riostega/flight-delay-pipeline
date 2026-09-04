@@ -1,0 +1,62 @@
+version: 2
+
+models:
+  - name: fct_flight_events
+    description: >
+      One row per physical flight per scheduled departure, for airports in
+      dim_airports. Collapses codeshare marketing labels and re-pull duplicates
+      onto the operating flight, so carrier-level delay statistics reflect the
+      airline that actually flew the aircraft.
+    columns:
+      - name: flight_event_key
+        description: Operating flight designator plus scheduled departure. The grain key.
+        tests:
+          - unique
+          - not_null
+      - name: operating_flight_iata
+        description: Flight designator of the carrier that actually operated the aircraft.
+        tests:
+          - not_null
+      - name: operating_carrier_name
+        description: Carrier that actually operated the flight, title-cased.
+        tests:
+          - not_null
+      - name: marketing_label_count
+        description: >
+          Distinct marketing flight numbers observed for this physical flight.
+          Greater than one means multiple carriers sold seats on it.
+        tests:
+          - not_null
+      - name: arrival_airport
+        description: IATA code of the arrival airport. Constrained to project scope.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_airports')
+                field: iata_code
+      - name: departure_scheduled
+        tests:
+          - not_null
+      - name: is_delayed_arrival
+        description: Arrival more than 15 minutes late, the US DOT on-time threshold.
+        tests:
+          - not_null
+      - name: is_delayed_departure
+        tests:
+          - not_null
+
+seeds:
+  - name: dim_airports
+    description: Airports in scope. Read by dbt and by extract_pipeline.py.
+    columns:
+      - name: iata_code
+        tests:
+          - unique
+          - not_null
+      - name: latitude
+        tests:
+          - not_null
+      - name: longitude
+        tests:
+          - not_null
