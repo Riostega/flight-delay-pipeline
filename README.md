@@ -110,19 +110,23 @@ tracked file.
 
 ## Sample output
 
-A single pull returns 100 landed flights per airport. Illustrative results from one snapshot —
-not a finding, as it represents one moment rather than an accumulated sample:
+A single pull returns 100 landed flights per airport, which resolve to 269 distinct physical
+flights after codeshare collapse. Illustrative results from one snapshot — not a finding, as it
+represents one moment rather than an accumulated sample:
 
-| Airport | Flights | Avg dep delay | Avg arr delay | >15 min late | Conditions |
+| Airport | Flights | Avg dep delay | Avg arr delay | Recovered in air | % late arrival |
 |---|---|---|---|---|---|
-| EWR | 100 | 25.6 | −9.6 | 16 | Clear |
-| SFO | 100 | 21.9 | −9.8 | 9 | Clear |
-| MIA | 100 | 16.2 | −14.6 | 6 | Rain |
-| ATL | 100 | 13.9 | −18.5 | 6 | Clear |
-| LAX | 100 | 13.4 | −20.5 | 0 | Clear |
+| EWR | 60 | 24.2 | −11.3 | 35.5 | 15.0% |
+| SFO | 59 | 22.5 | −8.6 | 31.1 | 10.2% |
+| MIA | 62 | 13.1 | −13.4 | 26.5 | 8.1% |
+| ATL | 42 | 12.5 | −19.1 | 31.6 | 4.8% |
+| LAX | 46 | 15.1 | −20.7 | 35.8 | 0.0% |
 
-The shape is the point: the only airport with active precipitation placed third, while the
-worst performer was operating under clear skies.
+The shape is the point: two airports under comparable conditions sit at opposite extremes.
+
+Codeshare collapse is not a marginal correction. Of 500 source records, 177 physical flights
+carried a single marketing label, 71 carried two to four, and 21 carried five or more — one
+aircraft appeared under nine different airline flight numbers.
 
 ## Status
 
@@ -131,8 +135,8 @@ worst performer was operating under clear skies.
 | Extract | Complete |
 | Land (S3) | Complete |
 | Load (Snowflake) | Complete |
-| Transform (dbt) | Staging models and airport dimension complete; fact table and tests in progress |
-| Orchestrate (Airflow) | Not yet implemented |
+| Transform (dbt) | Complete — staging models, airport dimension, fact table, 19 passing tests |
+| Orchestrate (Airflow) | In progress |
 | Analysis | Pending data accumulation |
 
 ## Setup
@@ -190,9 +194,7 @@ test_snowflake.py            Connection smoke test
 
 flight_delay_pipeline/       dbt project
   models/staging/            sources.yml, stg_flights, stg_weather
+  models/marts/              fct_flight_events and its tests
   seeds/dim_airports.csv     Airport scope and coordinates — read by dbt and the extractor
-
-extract_flights.py           Early standalone experiments, superseded by extract_pipeline.py
-extract_weather.py           and retained for reference
-extract_s3.py
+  tests/                     Singular tests
 ```
