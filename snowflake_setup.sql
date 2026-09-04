@@ -54,14 +54,17 @@ CREATE OR REPLACE STAGE raw_flights_stage
 
 -- 5a. Staging table — holds raw flight JSON, one row per file
 CREATE TABLE IF NOT EXISTS stg_flights_raw (
-  raw_data VARIANT
+  raw_data    VARIANT,
+  source_file STRING
 );
 
 -- 6a. Load flight files from S3. Snowflake tracks load history per table, so
 -- re-running skips files already loaded and picks up only new ones.
-COPY INTO stg_flights_raw
-  FROM @raw_flights_stage
-  FILE_FORMAT = (FORMAT_NAME = flight_pipeline_json_format);
+COPY INTO stg_flights_raw (raw_data, source_file)
+  FROM (
+    SELECT $1, metadata$filename
+    FROM @raw_flights_stage (FILE_FORMAT => flight_pipeline_json_format)
+  );
 
 -- ============================================
 -- 4b. Stage — pointer to the weather S3 folder
@@ -73,13 +76,16 @@ CREATE OR REPLACE STAGE raw_weather_stage
 
 -- 5b. Staging table — holds raw weather JSON, one row per file
 CREATE TABLE IF NOT EXISTS stg_weather_raw (
-  raw_data VARIANT
+  raw_data    VARIANT,
+  source_file STRING
 );
 
 -- 6b. Load weather files from S3 into the staging table
-COPY INTO stg_weather_raw
-  FROM @raw_weather_stage
-  FILE_FORMAT = (FORMAT_NAME = flight_pipeline_json_format);
+COPY INTO stg_weather_raw (raw_data, source_file)
+  FROM (
+    SELECT $1, metadata$filename
+    FROM @raw_weather_stage (FILE_FORMAT => flight_pipeline_json_format)
+  );
 
 -- ============================================
 -- Verification — row counts, not full dumps (each row is a whole JSON file)

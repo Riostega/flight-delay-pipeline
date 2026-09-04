@@ -36,7 +36,10 @@ select
     datediff('minute', f.value:departure.scheduled::timestamp_tz,
                        f.value:departure.actual::timestamp_tz)  as departure_delay_minutes,
     datediff('minute', f.value:arrival.scheduled::timestamp_tz,
-                       f.value:arrival.actual::timestamp_tz)    as arrival_delay_minutes
+                       f.value:arrival.actual::timestamp_tz)    as arrival_delay_minutes,
+
+    -- Lineage back to the exact S3 object this row came from.
+    r.source_file
 
 from {{ source('raw', 'stg_flights_raw') }} r,
 lateral flatten(input => r.raw_data:data) f

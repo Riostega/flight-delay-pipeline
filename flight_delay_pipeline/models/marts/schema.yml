@@ -45,6 +45,21 @@ models:
       - name: is_delayed_departure
         tests:
           - not_null
+      - name: weather_lag_minutes
+        description: >
+          Minutes between the matched weather observation and the flight's actual
+          arrival. Retained on every row, including rows whose observation was too
+          stale to use, so match quality stays inspectable.
+      - name: has_weather_match
+        description: >
+          True when a weather observation was found within weather_max_lag_minutes
+          (default 120) of arrival. False means the weather_* columns are null.
+        tests:
+          - not_null
+      - name: weather_main
+        description: >
+          Condition category at the arrival airport around landing. Null when no
+          observation was fresh enough; never a stale reading presented as current.
 
 seeds:
   - name: dim_airports

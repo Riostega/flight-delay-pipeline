@@ -20,6 +20,13 @@ with scoped as (
     select *
     from {{ ref('stg_flights') }}
     where arrival_airport in (select iata_code from {{ ref('dim_airports') }})
+      -- Drop records carrying no flight identifier at all. AviationStack
+      -- returns airline_name = 'empty' with every designator null when it
+      -- cannot identify a flight; such a row has no carrier and no flight
+      -- number, so it cannot be attributed to anything this table is about,
+      -- and it would null the grain key. assert_unidentified_flight_rate
+      -- fails if these ever stop being rare.
+      and coalesce(codeshare_flight_iata, flight_iata, flight_icao) is not null
 
 ),
 
@@ -69,18 +76,91 @@ physical_flights as (
         order by marketing_flight_iata
     ) = 1
 
+),
+
+flight_events as (
+
+    select
+        operating_flight_iata || '_' || to_varchar(departure_scheduled) as flight_event_key,
+
+        flight_date,
+        operating_flight_iata,
+        operating_carrier_name,
+        marketing_flight_iata,
+        marketing_carrier_name,
+        marketing_label_count,
+        marketing_label_count > 1                                as has_codeshare_partners,
+        aircraft_icao24,
+
+        departure_airport,
+        arrival_airport,
+
+        departure_scheduled,
+        departure_actual,
+        departure_delay_minutes,
+
+        arrival_scheduled,
+        arrival_actual,
+        arrival_delay_minutes,
+
+        -- Flights routinely recover time in the air because airlines pad
+        -- published schedules; measuring arrival delay alone hides origin-side
+        -- operational failures.
+        departure_delay_minutes - arrival_delay_minutes          as minutes_recovered,
+
+        -- 15 minutes is the US DOT / BTS on-time threshold, which keeps these
+        -- figures comparable to published industry statistics.
+        coalesce(departure_delay_minutes > 15, false)            as is_delayed_departure,
+        coalesce(arrival_delay_minutes > 15, false)              as is_delayed_arrival
+
+    from physical_flights
+
+),
+
+with_weather as (
+
+    -- ASOF JOIN takes the most recent observation at or before each arrival:
+    -- weather after landing cannot have caused the delay. It preserves rows
+    -- with no match, so flights are never dropped for want of weather.
+    select
+        f.*,
+        w.observed_at                                            as weather_observed_at,
+        w.weather_main,
+        w.weather_description,
+        w.temp_f,
+        w.humidity,
+        w.wind_speed,
+        w.wind_gust,
+        w.visibility_m,
+        w.cloud_cover_pct,
+
+        -- How stale the matched observation was. Kept on every row so the
+        -- quality of each match is visible rather than assumed.
+        datediff(
+            'minute',
+            w.observed_at,
+            convert_timezone('UTC', f.arrival_actual)::timestamp_ntz
+        )                                                        as weather_lag_minutes
+
+    from flight_events f
+    asof join {{ ref('stg_weather') }} w
+        match_condition (
+            convert_timezone('UTC', f.arrival_actual)::timestamp_ntz >= w.observed_at
+        )
+        on f.arrival_airport = w.iata_code
+
 )
 
 select
-    operating_flight_iata || '_' || to_varchar(departure_scheduled) as flight_event_key,
-
+    flight_event_key,
     flight_date,
+
     operating_flight_iata,
     operating_carrier_name,
     marketing_flight_iata,
     marketing_carrier_name,
     marketing_label_count,
-    marketing_label_count > 1                                as has_codeshare_partners,
+    has_codeshare_partners,
     aircraft_icao24,
 
     departure_airport,
@@ -89,18 +169,40 @@ select
     departure_scheduled,
     departure_actual,
     departure_delay_minutes,
-
     arrival_scheduled,
     arrival_actual,
     arrival_delay_minutes,
+    minutes_recovered,
+    is_delayed_departure,
+    is_delayed_arrival,
 
-    -- Flights routinely recover time in the air because airlines pad published
-    -- schedules; measuring arrival delay alone hides origin-side failures.
-    departure_delay_minutes - arrival_delay_minutes          as minutes_recovered,
+    -- Weather conditions at the arrival airport around landing.
+    --
+    -- Observations older than the threshold are discarded rather than reported:
+    -- weather is collected hourly, so a healthy gap is under an hour, and a
+    -- reading many hours stale describes a different time of day entirely. It
+    -- would look identical to a good one in the data. weather_lag_minutes is
+    -- retained regardless so the freshness of every match stays inspectable.
+    weather_observed_at,
+    weather_lag_minutes,
+    coalesce(weather_lag_minutes <= {{ var('weather_max_lag_minutes', 120) }}, false)
+                                                                 as has_weather_match,
 
-    -- 15 minutes is the US DOT / BTS on-time threshold, which keeps these
-    -- figures comparable to published industry statistics.
-    coalesce(departure_delay_minutes > 15, false)            as is_delayed_departure,
-    coalesce(arrival_delay_minutes > 15, false)              as is_delayed_arrival
+    case when weather_lag_minutes <= {{ var('weather_max_lag_minutes', 120) }}
+         then weather_main end                                   as weather_main,
+    case when weather_lag_minutes <= {{ var('weather_max_lag_minutes', 120) }}
+         then weather_description end                            as weather_description,
+    case when weather_lag_minutes <= {{ var('weather_max_lag_minutes', 120) }}
+         then temp_f end                                         as weather_temp_f,
+    case when weather_lag_minutes <= {{ var('weather_max_lag_minutes', 120) }}
+         then humidity end                                       as weather_humidity,
+    case when weather_lag_minutes <= {{ var('weather_max_lag_minutes', 120) }}
+         then wind_speed end                                     as weather_wind_speed,
+    case when weather_lag_minutes <= {{ var('weather_max_lag_minutes', 120) }}
+         then wind_gust end                                      as weather_wind_gust,
+    case when weather_lag_minutes <= {{ var('weather_max_lag_minutes', 120) }}
+         then visibility_m end                                   as weather_visibility_m,
+    case when weather_lag_minutes <= {{ var('weather_max_lag_minutes', 120) }}
+         then cloud_cover_pct end                                as weather_cloud_cover_pct
 
-from physical_flights
+from with_weather
