@@ -1,0 +1,71 @@
+"""Daily flight pipeline: extract -> load -> transform -> test.
+
+Runs the full ELT chain once a day. The ordering is the reason this is an
+Airflow DAG rather than four cron entries: dbt must not run if the Snowflake
+load failed, or it would silently model stale data and report success.
+"""
+
+from datetime import datetime, timedelta
+
+from airflow.sdk import DAG
+from airflow.providers.standard.operators.bash import BashOperator
+
+PROJECT_DIR = "/Users/josh/Flight_Delay_Pipeline"
+DBT_DIR = f"{PROJECT_DIR}/flight_delay_pipeline"
+
+# Airflow runs in its own virtualenv, which deliberately does not have this
+# project's dependencies (Airflow and dbt pin conflicting versions of jinja2,
+# pydantic and requests). Tasks therefore shell out to the system interpreter
+# rather than importing the pipeline.
+PYTHON = "/usr/local/bin/python3"
+DBT = "/Library/Frameworks/Python.framework/Versions/3.12/bin/dbt"
+
+default_args = {
+    # One retry, not the usual three: each flights attempt spends 5 of roughly
+    # 100 monthly AviationStack calls, so aggressive retries burn the quota.
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
+}
+
+with DAG(
+    dag_id="flight_pipeline_daily",
+    description="Extract landed flights, load to Snowflake, rebuild and test dbt models",
+    start_date=datetime(2026, 9, 1),
+    schedule="0 9 * * *",
+    # AviationStack's free tier is a live snapshot with no historical endpoint,
+    # so a missed interval cannot be recovered by replaying it — re-running a
+    # missed 3am task at 9am fetches 9am data. Backfilling would write wrong
+    # rows rather than recovering absent ones.
+    catchup=False,
+    # Prevent a slow run and the next scheduled run from overlapping and
+    # double-loading the same files.
+    max_active_runs=1,
+    default_args=default_args,
+    tags=["flights", "elt"],
+) as dag:
+
+    extract_flights = BashOperator(
+        task_id="extract_flights",
+        bash_command=f"cd {PROJECT_DIR} && {PYTHON} extract_pipeline.py flights",
+    )
+
+    load_to_snowflake = BashOperator(
+        task_id="load_to_snowflake",
+        # Idempotent: COPY INTO tracks load history per table, so this loads
+        # only files landed since the last run.
+        bash_command=f"cd {PROJECT_DIR} && {PYTHON} run_snowflake_setup.py",
+    )
+
+    dbt_run = BashOperator(
+        task_id="dbt_run",
+        bash_command=f"cd {DBT_DIR} && {DBT} run",
+    )
+
+    dbt_test = BashOperator(
+        task_id="dbt_test",
+        # Runs after the models are rebuilt so a broken grain key or a delay
+        # value outside the plausible range fails the run loudly.
+        bash_command=f"cd {DBT_DIR} && {DBT} test",
+    )
+
+    extract_flights >> load_to_snowflake >> dbt_run >> dbt_test
