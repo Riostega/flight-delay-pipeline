@@ -1,0 +1,13 @@
+# Extraction
+requests==2.34.2
+python-dotenv==1.2.2
+
+# S3 raw zone
+boto3==1.43.57
+
+# Snowflake load
+snowflake-connector-python==4.7.1
+
+# Transformation
+dbt-core==1.12.2
+dbt-snowflake==1.12.0

@@ -1,0 +1,198 @@
+# Flight Delay Reliability Pipeline
+
+An ELT pipeline that measures airport and airline reliability, and separates delays caused by
+weather from delays caused by operational and carrier factors.
+
+## The question
+
+"Flights get delayed in bad weather" is not an interesting finding. The interesting question is
+the inverse: **which airports and carriers show delay patterns that _don't_ track their weather?**
+An airport with mild conditions and persistent delays has an operational problem. An airport that
+absorbs severe weather without falling behind is running good operations. Isolating that signal
+requires joining flight outcomes to the weather conditions actually present at the arrival
+airport at the time of arrival — which is what this pipeline is built to produce.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[AviationStack<br/>flight status] --> C[extract_pipeline.py]
+    B[OpenWeatherMap<br/>conditions] --> C
+    C -->|raw JSON, untouched| D[(S3 raw zone)]
+    D -->|COPY INTO| E[(Snowflake<br/>VARIANT staging)]
+    E --> F[dbt models]
+    F --> G[fact + dimension<br/>tables]
+```
+
+Airflow orchestrates the sequence on two schedules: flights daily, weather hourly.
+
+**Extract → Land → Load → Transform.** Raw API responses are landed in S3 exactly as received
+and never modified. Snowflake holds only derived data. Everything downstream of S3 is
+reproducible from it.
+
+## Stack
+
+| Tool | Role |
+|---|---|
+| Python | API extraction, error handling, S3 landing |
+| AWS S3 | Immutable raw zone, partitioned by date and airport |
+| Snowflake | Warehouse — `VARIANT` staging tables plus modeled fact/dimension tables |
+| dbt | Transformation, testing, and documentation of the modeled layer |
+| Airflow | Scheduling, retries, and task dependencies |
+
+## Design decisions
+
+These are the choices that required judgment rather than syntax.
+
+### Codeshares are a correctness problem, not a cosmetic one
+
+AviationStack returns one record per *marketing* flight number. A single aircraft therefore
+appears many times under many airlines. In one sample, nine of ten records were codeshare
+labels — Qatar Airways showed a 41-minute delay on a flight **Virgin Australia** operated, and
+five separate records (China Eastern, Shenzhen, China Southern, Air China, Xiamen Air) all
+described one Juneyao Air aircraft.
+
+Attributing one aircraft's delay to five carriers would have corrupted the central analysis. The
+fact table is therefore built at the **physical-flight grain**, keyed on the operating flight
+plus scheduled departure, with the codeshare relationship preserved as a measure rather than as
+duplicated rows. The same key resolves re-pull duplicates for free: the same aircraft pulled
+twice on consecutive runs collapses to one row.
+
+### Delay is computed, not read
+
+AviationStack's `delay` field is inconsistently populated — frequently null on flights whose
+scheduled and actual times clearly differ. Delay is therefore derived directly from timestamps
+(`datediff('minute', scheduled, actual)`), which is both more reliable and explicit about what
+"delayed" means.
+
+### Departure and arrival delay are tracked separately
+
+Across a representative pull, every airport showed positive average *departure* delay but
+negative average *arrival* delay — flights routinely recover 20-30 minutes in the air because
+airlines pad published schedules. Measuring only arrival delay (the US DOT convention) hides
+origin-side operational failures entirely, so both are retained along with a derived
+`minutes_recovered`.
+
+### The raw zone is the source of truth
+
+When the Snowflake trial account expired and the entire warehouse was lost, recovery took
+minutes and lost no data: the raw zone was untouched, so the warehouse was rebuilt from S3 by
+re-running the setup script and `dbt run`. This is the practical payoff of separating Extract
+and Load from Transform.
+
+### Scope is bounded, and the two schedules are decoupled
+
+The pipeline tracks five airports (`ATL`, `EWR`, `LAX`, `MIA`, `SFO`) rather than sampling
+globally. Unbounded sampling never accumulates enough observations of any single airport to
+compare reliability, and weather cannot be fetched for airports that can't be predicted in
+advance.
+
+The airports were selected to vary **independently** on weather severity and operational
+reputation, so the two effects can be separated: LAX as a control (dry season, congested — its
+delays are operational by construction), MIA for weather variance, ATL for severe weather with
+strong operations, EWR for weak operations, SFO for fog as a mechanism distinct from convective
+storms.
+
+The two API quotas differ by orders of magnitude, so their schedules are decoupled: flights
+daily (quota-bound), weather hourly. Hourly weather is what makes the eventual join meaningful —
+matching every flight to a single coarse daily reading would produce a decorative column rather
+than a real one.
+
+### One source of truth for scope
+
+`seeds/dim_airports.csv` is loaded by dbt as the `dim_airports` dimension **and** read directly
+by the extract script. The pipeline and the warehouse cannot disagree about which airports are
+in scope, and adding an airport is a one-line change that both sides pick up.
+
+The same principle applies to credentials: `snowflake_setup.sql` is version-controlled and holds
+`<PLACEHOLDER>` tokens substituted at runtime from `.env`, so no secret is ever written to a
+tracked file.
+
+## Sample output
+
+A single pull returns 100 landed flights per airport. Illustrative results from one snapshot —
+not a finding, as it represents one moment rather than an accumulated sample:
+
+| Airport | Flights | Avg dep delay | Avg arr delay | >15 min late | Conditions |
+|---|---|---|---|---|---|
+| EWR | 100 | 25.6 | −9.6 | 16 | Clear |
+| SFO | 100 | 21.9 | −9.8 | 9 | Clear |
+| MIA | 100 | 16.2 | −14.6 | 6 | Rain |
+| ATL | 100 | 13.9 | −18.5 | 6 | Clear |
+| LAX | 100 | 13.4 | −20.5 | 0 | Clear |
+
+The shape is the point: the only airport with active precipitation placed third, while the
+worst performer was operating under clear skies.
+
+## Status
+
+| Stage | State |
+|---|---|
+| Extract | Complete |
+| Land (S3) | Complete |
+| Load (Snowflake) | Complete |
+| Transform (dbt) | Staging models and airport dimension complete; fact table and tests in progress |
+| Orchestrate (Airflow) | Not yet implemented |
+| Analysis | Pending data accumulation |
+
+## Setup
+
+Requires Python 3.12+, a Snowflake account, an S3 bucket, and API keys for
+[AviationStack](https://aviationstack.com) and [OpenWeatherMap](https://openweathermap.org/api).
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env        # then fill in credentials
+```
+
+dbt reads `~/.dbt/profiles.yml` rather than `.env`; it needs a `flight_delay_pipeline` profile
+pointing at the same Snowflake account.
+
+## Running
+
+```bash
+python3 extract_pipeline.py flights    # daily — quota-bound
+python3 extract_pipeline.py weather    # hourly
+python3 extract_pipeline.py all
+
+python3 test_snowflake.py              # connection check
+python3 run_snowflake_setup.py         # create warehouse/database/stages, COPY INTO from S3
+
+cd flight_delay_pipeline               # dbt must run from the project directory
+dbt seed                               # load dim_airports
+dbt run
+dbt test
+```
+
+`run_snowflake_setup.py` is idempotent — `COPY INTO` tracks load history per table, so re-running
+loads only files landed since the last run.
+
+## Known limitations
+
+- **AviationStack's free tier is a live snapshot, not a historical archive.** Data accumulates
+  only through repeated scheduled runs; back-filling isn't possible.
+- **The free-tier quota (~100 requests/month) caps flight collection at daily.** This is the
+  binding constraint on the entire pipeline's sampling frequency.
+- **OpenWeatherMap's free endpoint returns current conditions only.** Weather history is built by
+  the pipeline itself over time, so each flight joins to the nearest observation rather than to
+  conditions measured at its exact arrival minute.
+- **Carrier names arrive inconsistently cased** between the direct and codeshare fields, and are
+  normalized during transformation.
+- **Sampling is bounded to five airports**, so conclusions do not generalize beyond them.
+
+## Repository structure
+
+```
+extract_pipeline.py          Extraction and S3 landing (flights + weather)
+snowflake_setup.sql          Warehouse, database, stages, staging tables, COPY INTO
+run_snowflake_setup.py       Executes the above statement-by-statement, injecting secrets
+test_snowflake.py            Connection smoke test
+
+flight_delay_pipeline/       dbt project
+  models/staging/            sources.yml, stg_flights, stg_weather
+  seeds/dim_airports.csv     Airport scope and coordinates — read by dbt and the extractor
+
+extract_flights.py           Early standalone experiments, superseded by extract_pipeline.py
+extract_weather.py           and retained for reference
+extract_s3.py
+```
