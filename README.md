@@ -61,6 +61,22 @@ plus scheduled departure, with the codeshare relationship preserved as a measure
 duplicated rows. The same key resolves re-pull duplicates for free: the same aircraft pulled
 twice on consecutive runs collapses to one row.
 
+### Timestamps are local time wearing a UTC label
+
+AviationStack returns timestamps with a `+00:00` offset that is not true — they
+are local wall time at the airport, and the real zone arrives in a separate
+`timezone` field. Taken at face value, trans-Pacific flights appear to land
+before they take off, and every flight matches weather four to seven hours away
+from its real arrival — while the freshness column still reads as healthy,
+because both sides are consistently wrong.
+
+The models therefore carry both readings under explicit names: `*_local` for the
+wall time as reported, and `*_utc` converted using the zone the API supplies
+separately. Delay is measured in local time, where scheduled and actual share an
+airport and the difference is exact; the weather join uses UTC, where comparing
+two instants is meaningful. A test asserts that no flight arrives before it
+departs, which is the tripwire for this class of error returning.
+
 ### Delay is computed, not read
 
 AviationStack's `delay` field is inconsistently populated — frequently null on flights whose

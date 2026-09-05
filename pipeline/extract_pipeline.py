@@ -4,7 +4,7 @@ import os
 import csv
 import sys
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -89,7 +89,11 @@ def upload_to_s3(data, prefix, iata):
         aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
         region_name=os.getenv("AWS_REGION"),
     )
-    now = datetime.now()
+    # UTC, not local time. datetime.now() follows the host's timezone, so the
+    # same instant landed under two different date partitions depending on
+    # whether the laptop (CDT) or the EC2 host (UTC) ran the extract, and two
+    # files could share an HHMMSS while being hours apart.
+    now = datetime.now(timezone.utc)
 
     # Airport goes in the key for legibility only. The raw JSON is landed
     # exactly as received — the airport is recoverable from the payload itself

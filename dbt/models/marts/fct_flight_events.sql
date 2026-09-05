@@ -54,8 +54,8 @@ deduplicated as (
     select *
     from attributed
     qualify row_number() over (
-        partition by marketing_flight_iata, departure_scheduled
-        order by arrival_actual desc nulls last
+        partition by marketing_flight_iata, departure_scheduled_local
+        order by arrival_actual_local desc nulls last
     ) = 1
 
 ),
@@ -68,11 +68,11 @@ physical_flights as (
     select
         *,
         count(*) over (
-            partition by operating_flight_iata, departure_scheduled
+            partition by operating_flight_iata, departure_scheduled_local
         ) as marketing_label_count
     from deduplicated
     qualify row_number() over (
-        partition by operating_flight_iata, departure_scheduled
+        partition by operating_flight_iata, departure_scheduled_local
         order by marketing_flight_iata
     ) = 1
 
@@ -81,7 +81,7 @@ physical_flights as (
 flight_events as (
 
     select
-        operating_flight_iata || '_' || to_varchar(departure_scheduled) as flight_event_key,
+        operating_flight_iata || '_' || to_varchar(departure_scheduled_local) as flight_event_key,
 
         flight_date,
         operating_flight_iata,
@@ -95,12 +95,23 @@ flight_events as (
         departure_airport,
         arrival_airport,
 
-        departure_scheduled,
-        departure_actual,
+        departure_timezone,
+        arrival_timezone,
+
+        -- Local wall time is what the source reports and what delays are
+        -- measured in; UTC is what makes times comparable across airports and
+        -- joinable to weather. Both are kept, explicitly named, because
+        -- conflating them is precisely the bug this pair exists to prevent.
+        departure_scheduled_local,
+        departure_actual_local,
+        departure_scheduled_utc,
+        departure_actual_utc,
         departure_delay_minutes,
 
-        arrival_scheduled,
-        arrival_actual,
+        arrival_scheduled_local,
+        arrival_actual_local,
+        arrival_scheduled_utc,
+        arrival_actual_utc,
         arrival_delay_minutes,
 
         -- Flights routinely recover time in the air because airlines pad
@@ -136,17 +147,15 @@ with_weather as (
 
         -- How stale the matched observation was. Kept on every row so the
         -- quality of each match is visible rather than assumed.
-        datediff(
-            'minute',
-            w.observed_at,
-            convert_timezone('UTC', f.arrival_actual)::timestamp_ntz
-        )                                                        as weather_lag_minutes
+        -- Both sides are true UTC. Previously the flight side was local wall
+        -- time treated as UTC, which matched every flight to weather four to
+        -- seven hours from its real arrival while this lag still read as
+        -- healthy, because both sides were consistently wrong.
+        datediff('minute', w.observed_at, f.arrival_actual_utc)   as weather_lag_minutes
 
     from flight_events f
     asof join {{ ref('stg_weather') }} w
-        match_condition (
-            convert_timezone('UTC', f.arrival_actual)::timestamp_ntz >= w.observed_at
-        )
+        match_condition (f.arrival_actual_utc >= w.observed_at)
         on f.arrival_airport = w.iata_code
 
 ),
@@ -180,12 +189,19 @@ select
 
     departure_airport,
     arrival_airport,
+    departure_timezone,
+    arrival_timezone,
 
-    departure_scheduled,
-    departure_actual,
+    departure_scheduled_local,
+    departure_actual_local,
+    departure_scheduled_utc,
+    departure_actual_utc,
     departure_delay_minutes,
-    arrival_scheduled,
-    arrival_actual,
+
+    arrival_scheduled_local,
+    arrival_actual_local,
+    arrival_scheduled_utc,
+    arrival_actual_utc,
     arrival_delay_minutes,
     minutes_recovered,
     is_delayed_departure,

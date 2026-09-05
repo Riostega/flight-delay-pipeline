@@ -35,9 +35,17 @@ models:
               arguments:
                 to: ref('dim_airports')
                 field: iata_code
-      - name: departure_scheduled
+      - name: departure_scheduled_local
+        description: >
+          Scheduled departure as the source reports it — local wall time at the
+          airport. Always present, and therefore what the grain key is built on.
         tests:
           - not_null
+      - name: arrival_actual_utc
+        description: >
+          Actual arrival in true UTC, converted using the timezone the API
+          reports separately. What the weather join matches on. Null only when
+          the source omits the timezone.
       - name: is_delayed_arrival
         description: Arrival more than 15 minutes late, the US DOT on-time threshold.
         tests:
