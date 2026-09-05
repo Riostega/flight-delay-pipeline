@@ -1,0 +1,12 @@
+# The chart palette is validated against a specific surface colour, so the app
+# chrome is pinned to that same colour rather than following the OS theme.
+# Otherwise the charts are checked against one background and drawn on another.
+[theme]
+base = "dark"
+backgroundColor = "#1a1a19"          # the surface the dark palette was validated against
+secondaryBackgroundColor = "#242422"
+textColor = "#ffffff"
+primaryColor = "#3987e5"             # categorical slot 1, dark step
+
+[server]
+headless = true

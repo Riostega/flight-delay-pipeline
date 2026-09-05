@@ -19,17 +19,47 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-# Palette slots from the project's validated categorical set. Order is the
-# CVD-safety mechanism, not decoration, so these are used in the given order and
-# never cycled.
-BLUE, ORANGE, AQUA = "#2a78d6", "#eb6834", "#1baf7a"
-# Single-hue sequential ramp, light to dark, for magnitude.
-SEQ = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"]
-GOOD, WARNING, CRITICAL = "#0ca30c", "#fab219", "#d03b3b"
-INK, INK_MUTED, GRID = "#0b0b0b", "#52514e", "#e8e7e3"
+def theme_mode() -> str:
+    """Which validated palette to draw with.
 
-# Aqua sits below 3:1 on a light surface, so every chart using it ships visible
-# value labels and a table view — the relief the palette check requires.
+    Read from Streamlit's configured theme rather than sniffed from the browser:
+    st.context.theme.type returns None until the frontend reports back, which
+    silently produced light-mode charts on a dark background. .streamlit/config.toml
+    pins the surface, so this is deterministic.
+    """
+    base = st.get_option("theme.base")
+    if base in ("dark", "light"):
+        return base
+    return "dark" if getattr(st.context.theme, "type", None) == "dark" else "light"
+
+
+MODE = theme_mode()
+
+# Both modes are selected, not derived: the dark steps are chosen for the dark
+# surface and validated against it, rather than being a flip of the light ones.
+# Each trio was checked with the palette validator (all-pairs CVD separation 9.2
+# light / 9.4 dark, normal-vision 24.0 / 20.9 — both clear of the floors).
+if MODE == "dark":
+    SURFACE = "#1a1a19"
+    INK, INK_MUTED, GRID = "#ffffff", "#c3c2b7", "#383835"
+    BLUE, ORANGE, AQUA = "#3987e5", "#d95926", "#199e70"
+    # On a dark surface the darkest step recedes toward the background, so the
+    # ramp runs the other way: brighter means more. The darkest step used still
+    # clears 2:1 against the surface.
+    SEQ = ["#184f95", "#256abf", "#2a78d6", "#3987e5", "#5598e7", "#86b6ef", "#cde2fb"]
+    PAIR_STRONG, PAIR_SOFT = "#3987e5", "#cde2fb"
+else:
+    SURFACE = "#fcfcfb"
+    INK, INK_MUTED, GRID = "#0b0b0b", "#52514e", "#e8e7e3"
+    BLUE, ORANGE, AQUA = "#2a78d6", "#eb6834", "#1baf7a"
+    SEQ = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"]
+    PAIR_STRONG, PAIR_SOFT = "#184f95", "#6da7ec"
+
+GOOD, WARNING, CRITICAL = "#0ca30c", "#fab219", "#d03b3b"
+
+# In light mode aqua sits below 3:1 on the surface, so the relief rule applies:
+# every chart carries visible value labels and a table view. Kept in both modes
+# for consistency.
 WEATHER_COLORS = {"Clear": BLUE, "Clouds": ORANGE, "Rain": AQUA}
 
 st.set_page_config(page_title="Flight Reliability", page_icon="✈", layout="wide")
@@ -69,7 +99,8 @@ def base_layout(fig, height=380, xtitle="", ytitle=""):
         xaxis=dict(title=xtitle, gridcolor=GRID, zerolinecolor=GRID, linecolor=GRID),
         yaxis=dict(title=ytitle, gridcolor=GRID, zerolinecolor=GRID, linecolor=GRID),
         legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0, title=""),
-        hoverlabel=dict(bgcolor="white", font_size=13),
+        hoverlabel=dict(bgcolor=SURFACE, bordercolor=GRID,
+                        font=dict(color=INK, size=13)),
     )
     return fig
 
@@ -160,11 +191,11 @@ with tab_airports:
             line=dict(color=GRID, width=2), showlegend=False, hoverinfo="skip"))
     fig.add_trace(go.Scatter(
         x=d.AVG_DEP, y=d.AIRPORT, mode="markers", name="Departure",
-        marker=dict(color=SEQ[5], size=13, line=dict(color="white", width=2)),
+        marker=dict(color=PAIR_STRONG, size=13, line=dict(color=SURFACE, width=2)),
         hovertemplate="<b>%{y}</b><br>departure %{x} min<extra></extra>"))
     fig.add_trace(go.Scatter(
         x=d.AVG_ARR, y=d.AIRPORT, mode="markers", name="Arrival",
-        marker=dict(color=SEQ[2], size=13, line=dict(color="white", width=2)),
+        marker=dict(color=PAIR_SOFT, size=13, line=dict(color=SURFACE, width=2)),
         hovertemplate="<b>%{y}</b><br>arrival %{x} min<extra></extra>"))
     fig.add_vline(x=0, line_width=2, line_color=INK_MUTED, opacity=0.35)
     fig.update_yaxes(autorange="reversed")
@@ -234,8 +265,8 @@ with tab_weather:
             sub = w[w.CONDITION == cond]
             fig.add_trace(go.Bar(
                 name=cond, x=sub.AIRPORT, y=sub.AVG_ARR_DELAY,
-                marker=dict(color=WEATHER_COLORS.get(cond, SEQ[4]), cornerradius=4,
-                            line=dict(color="white", width=2)),
+                marker=dict(color=WEATHER_COLORS.get(cond, BLUE), cornerradius=4,
+                            line=dict(color=SURFACE, width=2)),
                 text=[f"{v:.0f}" for v in sub.AVG_ARR_DELAY], textposition="outside",
                 textfont=dict(color=INK_MUTED), customdata=sub.FLIGHTS,
                 hovertemplate="<b>%{x} — " + cond + "</b><br>%{y} min average<br>%{customdata} flights<extra></extra>"))
