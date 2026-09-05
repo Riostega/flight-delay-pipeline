@@ -13,13 +13,20 @@ console instead: EC2 > Instances > select > Instance state > Terminate.
 
 import sys
 
+from pathlib import Path
+
 import boto3
 from dotenv import dotenv_values
 
 NAME = "flight-pipeline"
 
-env = dotenv_values(".env")
-admin = dotenv_values(".env.admin")
+# Resolved from this file's location, not the working directory. These scripts
+# are run from wherever you happen to be — the teardown especially, which you
+# reach for in an emergency — and a relative path made them report that
+# credentials were missing when they were merely elsewhere.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+env = dotenv_values(REPO_ROOT / ".env")
+admin = dotenv_values(REPO_ROOT / ".env.admin")
 region = (env.get("AWS_REGION") or "us-east-2").strip()
 
 if not admin.get("AWS_ADMIN_ACCESS_KEY_ID"):

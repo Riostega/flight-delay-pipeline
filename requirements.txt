@@ -1,8 +1,21 @@
+# The pipeline's own dependencies. Airflow is deliberately NOT here.
+#
+# Airflow and dbt pin conflicting versions of jinja2, pydantic and requests, so
+# installing them together breaks one or the other. Airflow lives in a separate
+# virtualenv and invokes this project as a subprocess rather than importing it,
+# which is why dags/ imports a package this file does not install. See the
+# Deployment section of README.md.
+#
+#   python3 -m venv ~/pipeline-venv && ~/pipeline-venv/bin/pip install -r requirements.txt
+#   python3 -m venv ~/airflow-venv  && ~/airflow-venv/bin/pip install "apache-airflow==3.3.1" \
+#       --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-3.3.1/constraints-3.12.txt"
+
 # Extraction
 requests==2.34.2
 python-dotenv==1.2.2
 
-# S3 raw zone
+# S3 raw zone. botocore arrives pinned with boto3 and supplies the exception
+# types the infra scripts catch.
 boto3==1.43.57
 
 # Snowflake load

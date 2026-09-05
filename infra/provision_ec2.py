@@ -18,6 +18,8 @@ import os
 import sys
 import time
 
+from pathlib import Path
+
 import boto3
 import requests
 from botocore.exceptions import ClientError
@@ -33,8 +35,13 @@ INSTANCE_TYPE = "t3.micro"
 AMI_FILTER = "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"
 CANONICAL = "099720109477"
 
-env = dotenv_values(".env")
-admin = dotenv_values(".env.admin")
+# Resolved from this file's location, not the working directory. These scripts
+# are run from wherever you happen to be — the teardown especially, which you
+# reach for in an emergency — and a relative path made them report that
+# credentials were missing when they were merely elsewhere.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+env = dotenv_values(REPO_ROOT / ".env")
+admin = dotenv_values(REPO_ROOT / ".env.admin")
 REGION = (env.get("AWS_REGION") or "us-east-2").strip()
 BUCKET = (env.get("S3_BUCKET_NAME") or "").strip()
 

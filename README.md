@@ -211,8 +211,20 @@ Requires Python 3.12+, a Snowflake account, an S3 bucket, and API keys for
 [AviationStack](https://aviationstack.com) and [OpenWeatherMap](https://openweathermap.org/api).
 
 ```bash
-pip install -r requirements.txt
+python3 -m venv ~/pipeline-venv
+~/pipeline-venv/bin/pip install -r requirements.txt
 cp .env.example .env        # then fill in credentials
+```
+
+Airflow is installed into a **separate** virtualenv. It and dbt pin conflicting
+versions of `jinja2`, `pydantic` and `requests`, so they cannot share one
+environment; Airflow invokes the pipeline as a subprocess rather than importing
+it, which is why `dags/` imports a package `requirements.txt` does not install.
+
+```bash
+python3 -m venv ~/airflow-venv
+~/airflow-venv/bin/pip install "apache-airflow==3.3.1" \
+  --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-3.3.1/constraints-3.12.txt"
 ```
 
 dbt reads `~/.dbt/profiles.yml` rather than `.env`; it needs a `flight_delay_pipeline` profile
