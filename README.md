@@ -217,6 +217,38 @@ built to isolate.
 carried five or more — one aircraft appeared under 9 different airline flight numbers. Left
 uncollapsed, that aircraft's delay would have counted against 9 separate carriers.
 
+## Testing and CI
+
+34 dbt tests run against the modelled layer, and two GitHub Actions workflows enforce them on every
+push and pull request.
+
+**The load-bearing test is `unique` on `flight_event_key`.** It is the executable proof that the
+grain argument holds: if codeshare collapse or re-pull deduplication ever stopped working, it fails
+immediately rather than quietly producing wrong averages.
+
+Staging carries tests too, which is what makes `dbt build` protective — a staging model that fails
+its tests never becomes the input to the fact table. Testing only the mart would let a bad source
+rebuild it before anything objected.
+
+Three singular tests guard invariants a column test cannot express: that no flight arrives before it
+departs (the tripwire for timezone handling), that delay minutes stay within a plausible band, and
+that the weather freshness flag always agrees with the columns it governs.
+
+The two workflows fail for different reasons, deliberately:
+
+| Workflow | Needs credentials | Runs |
+|---|---|---|
+| `ci.yml` | No | Python and DAG compilation, plus `dbt parse` against a placeholder profile — validates refs, Jinja, SQL syntax and schema files without connecting to anything |
+| `dbt-build.yml` | Yes | The real `dbt build` and a headless render of the dashboard, against Snowflake |
+
+Keeping the credential-free checks separate means they keep passing regardless of the state of the
+Snowflake trial. The credentialed workflow checks whether its secrets exist and skips cleanly when
+they do not, so a fork reports *skipped* rather than *failed* — a permanently red badge would be
+worse than no badge.
+
+CI builds into a throwaway schema rather than `PUBLIC`, so a test run cannot disturb the models
+being analysed, and drops it afterwards in a step that always runs.
+
 ## Status
 
 | Stage | State |
@@ -227,6 +259,7 @@ uncollapsed, that aircraft's delay would have counted against 9 separate carrier
 | Transform (dbt) | Complete — staging models, airport dimension, fact table with weather join, 34 passing tests |
 | Orchestrate (Airflow) | Complete — two DAGs on decoupled schedules, running under `systemd` on EC2 |
 | Infrastructure | Complete — scripted provisioning, IAM role, versioned raw zone |
+| Testing and CI | Complete — 34 dbt tests, two workflows on every push |
 | Analysis | Pending data accumulation |
 
 ## Setup
@@ -348,4 +381,8 @@ dashboard/app.py             Streamlit dashboard over the modelled layer
 infra/
   provision_ec2.py           IAM role, key pair, security group, instance
   terminate_ec2.py           teardown
+
+.github/workflows/
+  ci.yml                     compilation and dbt parse, no credentials needed
+  dbt-build.yml              full dbt build and dashboard render, against Snowflake
 ```
