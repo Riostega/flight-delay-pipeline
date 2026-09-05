@@ -230,9 +230,11 @@ Staging carries tests too, which is what makes `dbt build` protective — a stag
 its tests never becomes the input to the fact table. Testing only the mart would let a bad source
 rebuild it before anything objected.
 
-Three singular tests guard invariants a column test cannot express: that no flight arrives before it
-departs (the tripwire for timezone handling), that delay minutes stay within a plausible band, and
-that the weather freshness flag always agrees with the columns it governs.
+Four singular tests guard invariants a column test cannot express: that no flight arrives before it
+departs (the tripwire for timezone handling), that delay minutes stay within a plausible band, that
+the weather freshness flag always agrees with the columns it governs, and that records dropped for
+carrying no flight identifier stay rare — so an exclusion the model makes deliberately cannot grow
+into silent data loss.
 
 The two workflows fail for different reasons, deliberately:
 
