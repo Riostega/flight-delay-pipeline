@@ -367,10 +367,15 @@ runs at all:
 | Scheduler wedged or stopped | watchdog (service state) |
 | DAG dropped by an import error | watchdog (dagbag check) |
 | Data going stale while every task passes | watchdog (freshness) |
-| Instance stopped outright | neither — needs an external dead-man's switch |
+| Instance stopped outright | external heartbeat (dead-man's switch) |
 
-That last row is the honest limit: nothing running on the box can report the box being
-gone, and silence is indistinguishable from health.
+That last row is why the watchdog also pings an external service. Nothing running on the
+box can report the box being gone — the alert would have to come from the machine that
+is absent, so the symptom is silence, which reads exactly like health. A dead-man's
+switch inverts it: the external service expects a ping on a schedule and alerts when one
+stops arriving. Set `HEARTBEAT_URL` in `.env` to any ping-URL service (healthchecks.io,
+Cronitor, Better Stack); the watchdog appends `/fail` when a check fails so the service
+alerts immediately instead of waiting out the grace period. Unset, it is a no-op.
 
 Liveness checks are local and run every 30 minutes. The freshness check queries
 Snowflake, which wakes the warehouse for its 60-second minimum billing period, so it is
