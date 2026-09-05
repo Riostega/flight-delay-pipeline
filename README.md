@@ -393,8 +393,11 @@ journalctl -u pipeline-watchdog.service -n 20     # what it last found
 
 - **AviationStack's free tier is a live snapshot, not a historical archive.** Data accumulates
   only through repeated scheduled runs; back-filling isn't possible.
-- **The free-tier quota (~100 requests/month) caps flight collection at daily.** This is the
-  binding constraint on the entire pipeline's sampling frequency.
+- **The free-tier quota (100 requests/month) caps flight collection at every other day.**
+  One run spends five requests, one per airport, so daily collection would need 150 a month
+  and exhaust the quota two-thirds of the way through. This is the binding constraint on the
+  entire pipeline's sampling frequency, and the extract refuses to start a run that would
+  overrun a monthly budget rather than discovering the ceiling by being refused mid-run.
 - **OpenWeatherMap's free endpoint returns current conditions only.** Weather history is built by
   the pipeline itself over time, so each flight joins to the nearest observation rather than to
   conditions measured at its exact arrival minute.

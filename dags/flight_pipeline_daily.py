@@ -36,9 +36,13 @@ default_args = {
     # Attached to default_args rather than to one task, so every task in
     # the DAG alerts — a failed load matters as much as a failed extract.
     "on_failure_callback": slack_alert,
-    # One retry, not the usual three: each flights attempt spends 5 of roughly
-    # 100 monthly AviationStack calls, so aggressive retries burn the quota.
-    "retries": 1,
+    # No retries on this DAG. A retry spends another five requests out of a
+    # hundred-per-month budget, and buys almost nothing: the endpoint returns
+    # whatever landed recently, so a retry five minutes later fetches nearly
+    # the same rows the failed attempt would have. The next scheduled run
+    # recovers the gap at no extra cost. Retrying here trades real quota for
+    # duplicate data.
+    "retries": 0,
     "retry_delay": timedelta(minutes=5),
 }
 
@@ -46,7 +50,16 @@ with DAG(
     dag_id="flight_pipeline_daily",
     description="Extract landed flights, load to Snowflake, rebuild and test dbt models",
     start_date=datetime(2026, 9, 1),
-    schedule="0 9 * * *",
+    # Every other day, not daily. AviationStack's free tier allows 100 requests
+    # a MONTH, and one run spends five (one per airport). Daily would need 150
+    # and would exhaust the quota around the 20th, leaving ten days of failing
+    # runs. Every other day fits in 75 with margin for a manual run.
+    #
+    # The data cost is smaller than it looks: the endpoint returns a live
+    # snapshot of recent arrivals, so consecutive pulls overlap heavily. At a
+    # 24-hour gap only ~36% of returned flights were new. Wider spacing raises
+    # novelty per request, so half the runs collect far more than half the data.
+    schedule="0 9 */2 * *",
     # AviationStack's free tier is a live snapshot with no historical endpoint,
     # so a missed interval cannot be recovered by replaying it — re-running a
     # missed 3am task at 9am fetches 9am data. Backfilling would write wrong

@@ -26,6 +26,26 @@ AIRPORTS_FILE = REPO_ROOT / "dbt" / "seeds" / "dim_airports.csv"
 # costs the same whether it returns 5 rows or 100, so always ask for the max.
 FLIGHTS_PER_REQUEST = 100
 
+# AviationStack's free tier allows 100 requests per calendar month, and one
+# flights run spends one request per airport. This budget leaves headroom under
+# that ceiling for a manual run or an unplanned retry.
+MONTHLY_REQUEST_BUDGET = 90
+
+
+def flight_requests_used_this_month(s3, bucket):
+    """Count this month's flight pulls from the raw zone.
+
+    Each successful request writes exactly one file, so the object count is the
+    request count. It undercounts when a request fails before landing a file —
+    a failed call still spends quota — which is why the budget above sits below
+    the real ceiling rather than at it.
+    """
+    prefix = f"raw/flights/{datetime.now(timezone.utc):%Y-%m}"
+    used = 0
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
+        used += len(page.get("Contents", []))
+    return used
+
 
 def load_airports():
     with open(AIRPORTS_FILE) as f:
@@ -131,6 +151,34 @@ def upload_to_s3(data, prefix, iata):
     print(f"    uploaded s3://{os.getenv('S3_BUCKET_NAME')}/{key}")
 
 
+def check_flight_budget(airports):
+    """Refuse to start a run that would overrun the monthly request budget.
+
+    Without this, exceeding the quota is only discovered by the API refusing
+    the call — after the requests have already been spent. Checking first makes
+    the limit something the pipeline observes rather than discovers.
+    """
+    try:
+        s3 = boto3.client(
+            "s3",
+            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+            region_name=os.getenv("AWS_REGION"),
+        )
+        used = flight_requests_used_this_month(s3, os.getenv("S3_BUCKET_NAME"))
+    except Exception as exc:
+        # A budget check that cannot run is not a reason to block collection.
+        print(f"  budget check unavailable ({exc}); proceeding")
+        return True
+
+    needed = len(airports)
+    print(f"  quota: {used}/{MONTHLY_REQUEST_BUDGET} used this month, this run needs {needed}")
+    if used + needed > MONTHLY_REQUEST_BUDGET:
+        print(f"  REFUSING: would reach {used + needed}, over the {MONTHLY_REQUEST_BUDGET} budget")
+        return False
+    return True
+
+
 def run_flights(airports):
     """Daily task — AviationStack's free quota is the binding constraint.
 
@@ -178,6 +226,8 @@ if __name__ == "__main__":
     attempted = 0
     collected = 0
     if mode in ("flights", "all"):
+        if not check_flight_budget(airports):
+            sys.exit("FAILED: monthly AviationStack budget reached — no requests spent")
         attempted += len(airports)
         collected += run_flights(airports)
     if mode in ("weather", "all"):
