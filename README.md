@@ -402,13 +402,8 @@ journalctl -u pipeline-watchdog.service -n 20     # what it last found
   *between* airports remain fair, since all five are sampled in the same window, but the figures
   are not comparable to published full-day on-time statistics, and time-of-day effects cannot be
   studied from this data.
-- **There is no push alerting.** A failed run is marked red in the Airflow UI and the
-  dashboard's pipeline-health tab flags stale collection, but nothing sends a notification.
-  Wiring failures to email or Slack would need SMTP or webhook credentials; until then,
-  detection is by looking rather than by being told.
 - **The host runs on a `t3.micro`**, which has less memory than Airflow comfortably wants. It is
   viable with swap and has not been OOM-killed, but there is little headroom.
-
 - **A stopped instance reports nothing.** Failure alerting and the watchdog both
   run on the host they monitor, so an instance that is stopped or unreachable produces
   silence rather than an alert. Closing this needs an external dead-man's switch that
