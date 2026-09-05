@@ -273,6 +273,12 @@ An internet-facing Airflow can trigger arbitrary DAGs, so it is never exposed di
 - **Carrier names arrive inconsistently cased** between the direct and codeshare fields, and are
   normalized during transformation.
 - **Sampling is bounded to five airports**, so conclusions do not generalize beyond them.
+- **The sample is biased by time of day.** Each request returns the most recently landed
+  flights, so a daily pull captures the same slice of the clock every time. Observed arrivals
+  cluster at 14:00-03:00 UTC and thin out to almost nothing between 05:00 and 13:00. Comparisons
+  *between* airports remain fair, since all five are sampled in the same window, but the figures
+  are not comparable to published full-day on-time statistics, and time-of-day effects cannot be
+  studied from this data.
 - **The host runs on a `t3.micro`**, which has less memory than Airflow comfortably wants. It is
   viable with swap and has not been OOM-killed, but there is little headroom.
 

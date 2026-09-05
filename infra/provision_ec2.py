@@ -98,13 +98,39 @@ def ensure_role():
 
 
 def ensure_key_pair():
-    if os.path.exists(KEY_PATH):
-        print(f"  key already saved at {KEY_PATH}")
-        return
+    """Create the SSH key pair, reconciling local and AWS state.
+
+    Checking only for the local file is not enough. If the private key were lost
+    while the key pair still existed in AWS, recreating it would replace the key
+    on record while a running instance kept the old public key — permanently
+    locking you out of a box you can still see. And if the AWS key were deleted
+    while the file remained, provisioning would skip creation and fail later
+    with an unhelpful error from run_instances.
+    """
+    local = os.path.exists(KEY_PATH)
     try:
-        ec2.delete_key_pair(KeyName=KEY_NAME)
+        ec2.describe_key_pairs(KeyNames=[KEY_NAME])
+        remote = True
     except ClientError:
-        pass
+        remote = False
+
+    if local and remote:
+        print(f"  key pair present locally and in AWS ({KEY_PATH})")
+        return
+    if local and not remote:
+        sys.exit(
+            f"Private key exists at {KEY_PATH} but no '{KEY_NAME}' key pair exists in AWS.\n"
+            "Delete the local file to create a fresh pair — but note that any instance "
+            "launched with the old key will no longer be reachable."
+        )
+    if remote and not local:
+        sys.exit(
+            f"AWS has a '{KEY_NAME}' key pair but the private key is not at {KEY_PATH}.\n"
+            "Refusing to replace it: a running instance still trusts the old public key, "
+            "and recreating the pair would lock you out of it permanently.\n"
+            "Recover the private key, or terminate the instance and delete the key pair first."
+        )
+
     r = ec2.create_key_pair(KeyName=KEY_NAME, KeyType="ed25519")
     os.makedirs(os.path.dirname(KEY_PATH), exist_ok=True)
     with open(KEY_PATH, "w") as f:
