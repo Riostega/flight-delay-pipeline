@@ -332,6 +332,27 @@ with tab_pipeline:
     c4.metric("Physical flights", f"{int(f.PHYSICAL_FLIGHTS):,}",
               delta=f"-{int(f.STAGED_ROWS) - int(f.PHYSICAL_FLIGHTS):,} collapsed",
               delta_color="off", help="Codeshare labels and re-pull duplicates removed")
+    # Collection failures are otherwise invisible: Airflow marks the run red in
+    # a UI nobody watches continuously. Surfacing staleness here means the
+    # symptom shows up where the data is actually looked at.
+    fresh = q("""
+        SELECT DATEDIFF('minute', (SELECT MAX(observed_at) FROM stg_weather), SYSDATE()) AS weather_age_min,
+               DATEDIFF('hour',   (SELECT MAX(arrival_actual_utc) FROM fct_flight_events), SYSDATE()) AS flights_age_hr
+    """).iloc[0]
+
+    wx_age, fl_age = fresh.WEATHER_AGE_MIN, fresh.FLIGHTS_AGE_HR
+    cols = st.columns(2)
+    # Weather runs hourly and flights daily, so these are roughly one missed
+    # run's worth of slack before something is genuinely wrong.
+    if wx_age is not None and wx_age > 120:
+        cols[0].error(f"Weather is {wx_age/60:.1f}h stale — hourly collection may have stopped")
+    else:
+        cols[0].success(f"Weather current ({wx_age:.0f} min old)" if wx_age is not None else "No weather yet")
+    if fl_age is not None and fl_age > 30:
+        cols[1].error(f"Newest flight arrival is {fl_age:.0f}h old — daily collection may have stopped")
+    else:
+        cols[1].success(f"Flights current (newest arrival {fl_age:.0f}h ago)" if fl_age is not None else "No flights yet")
+
     st.caption(f"Most recent weather observation: {f.LAST_WEATHER} UTC")
 
     st.divider()

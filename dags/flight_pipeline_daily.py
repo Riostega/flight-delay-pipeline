@@ -65,16 +65,14 @@ with DAG(
         bash_command=f"cd {PROJECT_DIR} && {PYTHON} pipeline/run_snowflake_setup.py snowflake_load.sql",
     )
 
-    dbt_run = BashOperator(
-        task_id="dbt_run",
-        bash_command=f"cd {DBT_DIR} && {DBT} run",
+    dbt_build = BashOperator(
+        task_id="dbt_build",
+        # build, not run-then-test. build tests each model as it is constructed
+        # and stops there, so a staging model that fails its tests never becomes
+        # the input to the fact table. Running everything first and testing
+        # afterwards leaves a corrupted mart in place while reporting the
+        # failure, which is the worse of the two outcomes.
+        bash_command=f"cd {DBT_DIR} && {DBT} build",
     )
 
-    dbt_test = BashOperator(
-        task_id="dbt_test",
-        # Runs after the models are rebuilt so a broken grain key or a delay
-        # value outside the plausible range fails the run loudly.
-        bash_command=f"cd {DBT_DIR} && {DBT} test",
-    )
-
-    extract_flights >> load_to_snowflake >> dbt_run >> dbt_test
+    extract_flights >> load_to_snowflake >> dbt_build

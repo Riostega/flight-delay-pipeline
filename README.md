@@ -279,6 +279,10 @@ An internet-facing Airflow can trigger arbitrary DAGs, so it is never exposed di
   *between* airports remain fair, since all five are sampled in the same window, but the figures
   are not comparable to published full-day on-time statistics, and time-of-day effects cannot be
   studied from this data.
+- **There is no push alerting.** A failed run is marked red in the Airflow UI and the
+  dashboard's pipeline-health tab flags stale collection, but nothing sends a notification.
+  Wiring failures to email or Slack would need SMTP or webhook credentials; until then,
+  detection is by looking rather than by being told.
 - **The host runs on a `t3.micro`**, which has less memory than Airflow comfortably wants. It is
   viable with swap and has not been OOM-killed, but there is little headroom.
 

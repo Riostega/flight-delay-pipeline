@@ -2,8 +2,14 @@ version: 2
 
 sources:
   - name: raw
-    database: FLIGHT_DELAY_PIPELINE
-    schema: PUBLIC
+    # The database follows the active target, so the project works against
+    # whatever .env names. The schema does NOT: these tables are created by
+    # pipeline/snowflake_setup.sql and always live where the COPY INTO put them,
+    # while a CI run builds its models into a throwaway schema of its own.
+    # Tying the source schema to target.schema makes CI look for raw tables in
+    # the empty schema it just created.
+    database: "{{ target.database }}"
+    schema: "{{ var('raw_schema', 'PUBLIC') }}"
     tables:
       - name: stg_flights_raw
       - name: stg_weather_raw
