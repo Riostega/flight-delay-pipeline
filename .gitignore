@@ -11,5 +11,5 @@ INTERVIEW_NOTES.md
 # Temporary provisioning credentials — delete after EC2 setup
 .env.admin
 
-# Working notes for AI assistance — local only
+# Local working notes
 CLAUDE.md

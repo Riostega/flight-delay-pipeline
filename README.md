@@ -96,7 +96,7 @@ origin-side operational failures entirely, so both are retained along with a der
 
 When the Snowflake trial account expired and the entire warehouse was lost, recovery took
 minutes and lost no data: the raw zone was untouched, so the warehouse was rebuilt from S3 by
-re-running the setup script and `dbt run`. This is the practical payoff of separating Extract
+re-running the setup and load scripts and `dbt build`. This is the practical payoff of separating Extract
 and Load from Transform.
 
 ### Scope is bounded, and the two schedules are decoupled
@@ -200,7 +200,7 @@ aircraft appeared under nine different airline flight numbers.
 | Extract | Complete |
 | Land (S3) | Complete |
 | Load (Snowflake) | Complete |
-| Transform (dbt) | Complete — staging models, airport dimension, fact table with weather join, 22 passing tests |
+| Transform (dbt) | Complete — staging models, airport dimension, fact table with weather join, 34 passing tests |
 | Orchestrate (Airflow) | Complete — two DAGs on decoupled schedules, running under `systemd` on EC2 |
 | Infrastructure | Complete — scripted provisioning, IAM role, versioned raw zone |
 | Analysis | Pending data accumulation |
@@ -304,7 +304,7 @@ dbt/
   macros/                    drop_ci_schema — teardown for CI runs
 
 dags/
-  flight_pipeline_daily.py   extract -> load -> dbt run -> dbt test
+  flight_pipeline_daily.py   extract -> load -> dbt build
   weather_hourly.py          weather collection on its own schedule
 
 dashboard/app.py             Streamlit dashboard over the modelled layer

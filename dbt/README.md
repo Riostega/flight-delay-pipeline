@@ -46,6 +46,17 @@ before downstream models are constructed on bad data.
 
 ## Tests
 
-22 in total. The load-bearing one is `unique` on `flight_event_key` — it is the
-executable proof that the grain argument holds. If codeshares or re-pulls stopped
-collapsing correctly it fails immediately, rather than quietly producing wrong averages.
+34 in total, across staging and the mart.
+
+The load-bearing one is `unique` on `flight_event_key` — the executable proof
+that the grain argument holds. If codeshares or re-pulls stopped collapsing
+correctly it fails immediately, rather than quietly producing wrong averages.
+
+Staging carries tests too, and they are what makes `dbt build` protective: a
+staging model that fails its tests never becomes the input to the fact table.
+Testing only the mart would let a bad source rebuild it before anything noticed.
+
+Three singular tests guard invariants a column test cannot express: that no
+flight arrives before it departs (the tripwire for timezone handling), that
+delay minutes stay in a plausible band, and that the weather freshness flag
+always agrees with the weather columns it governs.

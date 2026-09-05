@@ -1,0 +1,76 @@
+version: 2
+
+models:
+  - name: stg_flights
+    description: >
+      One row per marketing flight label per landed file. Flattens the API's
+      nested JSON and casts it; deduplication, codeshare collapse and carrier
+      attribution are modelling decisions and happen in fct_flight_events.
+
+      Timestamps are exposed twice. The source labels local wall time with a
+      "+00:00" offset that is not true, so *_local is the reading as reported and
+      *_utc is converted using the timezone the API supplies in a separate field.
+    columns:
+      - name: flight_status
+        description: Always "landed" — the extract filters on it, since only completed flights have final times.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["landed"]
+      - name: arrival_airport
+        description: IATA code of the arrival airport, before scope filtering.
+        tests: [not_null]
+      - name: departure_scheduled_local
+        description: Scheduled departure in local wall time. Always present, unlike its UTC counterpart.
+        tests: [not_null]
+      - name: flight_date
+        description: Flight date as reported by the source.
+        tests: [not_null]
+      - name: departure_delay_minutes
+        description: Actual minus scheduled departure. Computed here rather than read from the source's unreliable delay field.
+      - name: arrival_delay_minutes
+        description: Actual minus scheduled arrival.
+      - name: codeshare_flight_iata
+        description: >
+          Populated when this record is a marketing label for a flight operated
+          by another carrier. Cast to string before any null check, because a
+          JSON null inside a VARIANT is not SQL NULL.
+      - name: source_file
+        description: The S3 object this row came from. Lineage back to the raw landing.
+        tests: [not_null]
+
+  - name: stg_weather
+    description: >
+      One row per weather observation per file. The airport comes from the S3
+      filename rather than the payload: the provider returns the nearest
+      station's coordinates and name, and which station it resolves to drifts
+      between calls, so neither field identifies the airport reliably.
+    columns:
+      - name: iata_code
+        description: >
+          Airport the observation was requested for, extracted from the S3 key.
+          Null only for files landed before the pipeline was scoped to specific
+          airports, which is why this is not tested as not_null.
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_airports')
+                field: iata_code
+      - name: observed_at
+        description: >
+          When the station took the reading, in UTC — not when the pipeline
+          fetched it. Fetching more often than the station updates returns the
+          same observation again.
+        tests: [not_null]
+      - name: temp_f
+        description: Temperature in Fahrenheit.
+        tests: [not_null]
+      - name: weather_main
+        description: Condition category, such as Clear, Clouds or Rain.
+        tests: [not_null]
+      - name: station_name
+        description: Station the provider resolved the request to. Drifts between calls; not an identifier.
+      - name: source_file
+        description: The S3 object this row came from.
+        tests: [not_null]

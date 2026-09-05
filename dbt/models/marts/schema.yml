@@ -6,80 +6,152 @@ models:
       One row per physical flight per scheduled departure, for airports in
       dim_airports. Collapses codeshare marketing labels and re-pull duplicates
       onto the operating flight, so carrier-level delay statistics reflect the
-      airline that actually flew the aircraft.
+      airline that actually flew the aircraft rather than every airline that
+      sold a seat on it.
     columns:
       - name: flight_event_key
-        description: Operating flight designator plus scheduled departure. The grain key.
-        tests:
-          - unique
-          - not_null
+        description: >
+          Operating flight designator plus scheduled departure, in local time.
+          The grain key. Local rather than UTC because a small number of records
+          omit the timezone, which would leave a UTC key null.
+        tests: [unique, not_null]
+
+      - name: flight_date
+        description: Flight date as reported by the source.
+
       - name: operating_flight_iata
-        description: Flight designator of the carrier that actually operated the aircraft.
-        tests:
-          - not_null
+        description: >
+          Flight designator of the carrier that actually operated the aircraft.
+          Taken from the codeshare block when present, otherwise the record's own
+          designator, falling back to ICAO for private operators with no IATA code.
+        tests: [not_null]
       - name: operating_carrier_name
         description: Carrier that actually operated the flight, title-cased.
-        tests:
-          - not_null
+        tests: [not_null]
+      - name: marketing_flight_iata
+        description: The flight number under which this record was sold.
+      - name: marketing_carrier_name
+        description: Carrier that sold seats on the flight, which is often not the operator.
       - name: marketing_label_count
         description: >
           Distinct marketing flight numbers observed for this physical flight.
-          Greater than one means multiple carriers sold seats on it.
-        tests:
-          - not_null
+          Greater than one means several carriers sold seats on the same aircraft.
+          Observed range so far is one to nine.
+        tests: [not_null]
+      - name: has_codeshare_partners
+        description: Whether more than one marketing label was seen for this flight.
+      - name: aircraft_icao24
+        description: Transponder identifier of the airframe. Useful for confirming that codeshare siblings are one aircraft.
+
+      - name: departure_airport
+        description: IATA code of the origin airport. Unbounded — flights arrive from anywhere.
       - name: arrival_airport
-        description: IATA code of the arrival airport. Constrained to project scope.
+        description: IATA code of the arrival airport. Constrained to the airports in scope.
         tests:
           - not_null
           - relationships:
               arguments:
                 to: ref('dim_airports')
                 field: iata_code
+      - name: departure_timezone
+        description: IANA zone of the origin airport, as reported alongside the timestamps.
+      - name: arrival_timezone
+        description: IANA zone of the arrival airport.
+
       - name: departure_scheduled_local
         description: >
           Scheduled departure as the source reports it — local wall time at the
-          airport. Always present, and therefore what the grain key is built on.
-        tests:
-          - not_null
+          airport. Always present, and what the grain key is built on.
+        tests: [not_null]
+      - name: departure_actual_local
+        description: Actual departure, local wall time.
+      - name: departure_scheduled_utc
+        description: Scheduled departure in true UTC. Null when the source omits the origin timezone.
+      - name: departure_actual_utc
+        description: Actual departure in true UTC.
+      - name: departure_delay_minutes
+        description: >
+          Actual minus scheduled departure, in minutes. Positive is late,
+          negative early. Computed rather than read from the source, whose own
+          delay field is inconsistently populated.
+
+      - name: arrival_scheduled_local
+        description: Scheduled arrival, local wall time at the arrival airport.
+      - name: arrival_actual_local
+        description: Actual arrival, local wall time.
+      - name: arrival_scheduled_utc
+        description: Scheduled arrival in true UTC.
       - name: arrival_actual_utc
         description: >
-          Actual arrival in true UTC, converted using the timezone the API
-          reports separately. What the weather join matches on. Null only when
-          the source omits the timezone.
-      - name: is_delayed_arrival
-        description: Arrival more than 15 minutes late, the US DOT on-time threshold.
-        tests:
-          - not_null
+          Actual arrival in true UTC, converted using the timezone the source
+          reports separately. What the weather join matches on.
+      - name: arrival_delay_minutes
+        description: Actual minus scheduled arrival, in minutes.
+
+      - name: minutes_recovered
+        description: >
+          Departure delay minus arrival delay. Positive means time was made up in
+          the air, which happens routinely because airlines pad published schedules.
       - name: is_delayed_departure
-        tests:
-          - not_null
+        description: Departure more than 15 minutes late.
+        tests: [not_null]
+      - name: is_delayed_arrival
+        description: >
+          Arrival more than 15 minutes late — the US DOT on-time threshold, which
+          keeps these figures comparable to published industry statistics.
+        tests: [not_null]
+
+      - name: weather_observed_at
+        description: >
+          Timestamp of the matched weather observation, in UTC. This is the
+          station's observation time, not the moment the pipeline fetched it.
       - name: weather_lag_minutes
         description: >
-          Minutes between the matched weather observation and the flight's actual
-          arrival. Retained on every row, including rows whose observation was too
-          stale to use, so match quality stays inspectable.
+          Minutes between the matched observation and actual arrival. Retained on
+          every row, including rows whose observation was too stale to use, so
+          match quality stays inspectable rather than assumed.
       - name: has_weather_match
         description: >
-          True when a weather observation was found within weather_max_lag_minutes
-          (default 120) of arrival. False means the weather_* columns are null.
-        tests:
-          - not_null
+          True when an observation was found within weather_max_lag_minutes
+          (default 120) before arrival. False means every weather_* column is null.
+        tests: [not_null]
       - name: weather_main
         description: >
           Condition category at the arrival airport around landing. Null when no
-          observation was fresh enough; never a stale reading presented as current.
+          observation was fresh enough; a stale reading is discarded rather than
+          presented as current.
+      - name: weather_description
+        description: Longer-form condition text from the same observation.
+      - name: weather_temp_f
+        description: Temperature in Fahrenheit at the arrival airport.
+      - name: weather_humidity
+        description: Relative humidity, percent.
+      - name: weather_wind_speed
+        description: Wind speed, miles per hour.
+      - name: weather_wind_gust
+        description: Gust speed, miles per hour. Null when the station reports no gusts.
+      - name: weather_visibility_m
+        description: Visibility in metres, capped by the provider at 10000.
+      - name: weather_cloud_cover_pct
+        description: Cloud cover, percent.
 
 seeds:
   - name: dim_airports
-    description: Airports in scope. Read by dbt and by pipeline/extract_pipeline.py.
+    description: >
+      Airports in scope, with coordinates. Read by dbt as a dimension and by
+      pipeline/extract_pipeline.py as the extraction scope, so the pipeline and
+      the warehouse cannot disagree about which airports are tracked.
     columns:
       - name: iata_code
-        tests:
-          - unique
-          - not_null
+        description: Three-letter IATA code. The airport's identity throughout the project.
+        tests: [unique, not_null]
+      - name: airport_name
+        description: Full airport name.
+      - name: city
+        description: City served.
       - name: latitude
-        tests:
-          - not_null
+        description: Latitude used for the weather request.
+        tests: [not_null]
       - name: longitude
-        tests:
-          - not_null
+        description: Longitude used for the weather request.
+        tests: [not_null]
