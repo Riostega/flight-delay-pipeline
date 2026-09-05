@@ -1,6 +1,7 @@
 -- ============================================
 -- Snowflake Setup — Flight Delay Pipeline
--- Creates compute, storage, stages and staging tables.
+-- Creates compute, storage, stages and staging tables. Creates them EMPTY —
+-- run snowflake_load.sql afterwards to populate them from S3.
 --
 -- Run with:  python3 pipeline/run_snowflake_setup.py snowflake_setup.sql
 --

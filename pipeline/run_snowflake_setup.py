@@ -106,4 +106,12 @@ for i, statement in enumerate(statements, start=1):
 cur.close()
 conn.close()
 
+# Creating the objects does not populate them: the COPY INTO statements live in
+# snowflake_load.sql so the daily path needs no AWS credentials. Say so, because
+# a rebuild that stops here produces empty tables and models that build cleanly
+# over nothing.
+if not failed and SETUP_FILE.name == "snowflake_setup.sql":
+    print("\nObjects created but empty. Populate them next:")
+    print("  python3 pipeline/run_snowflake_setup.py snowflake_load.sql")
+
 sys.exit(1 if failed else 0)

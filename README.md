@@ -144,6 +144,23 @@ references no credentials at all, and is what the pipeline runs daily. The runne
 the placeholders a given file actually uses, so a credential-free file runs on a
 credential-free host.
 
+### Recovering the warehouse
+
+Verified by destroying it: dropping both staging tables and running
+
+```bash
+python3 pipeline/run_snowflake_setup.py                     # recreate the objects
+python3 pipeline/run_snowflake_setup.py snowflake_load.sql  # repopulate from S3
+cd dbt && dbt build
+```
+
+reproduces the fact table with a byte-identical fingerprint — same row count,
+same key hash, same delay total, same weather coverage.
+
+Both commands are required. The first only creates empty objects; the
+`COPY INTO` statements live in the second so that the daily pipeline can run on
+a host holding no AWS credentials.
+
 ### Every layer is disposable except one
 
 ```
