@@ -175,23 +175,47 @@ bucket — deletes there become recoverable, closing the one hole that mattered.
 
 ## Sample output
 
-A single pull returns 100 landed flights per airport, which resolve to 269 distinct physical
-flights after codeshare collapse. Illustrative results from one snapshot — not a finding, as it
-represents one moment rather than an accumulated sample:
+Figures below come from an early accumulation window and will shift as data builds. They are shown
+because the *shape* is what the pipeline exists to detect, not because the sample is yet large
+enough to conclude from.
+
+**Reliability by airport** — 829 physical flights:
 
 | Airport | Flights | Avg dep delay | Avg arr delay | Recovered in air | % late arrival |
 |---|---|---|---|---|---|
-| EWR | 60 | 24.2 | −11.3 | 35.5 | 15.0% |
-| SFO | 59 | 22.5 | −8.6 | 31.1 | 10.2% |
-| MIA | 62 | 13.1 | −13.4 | 26.5 | 8.1% |
-| ATL | 42 | 12.5 | −19.1 | 31.6 | 4.8% |
-| LAX | 46 | 15.1 | −20.7 | 35.8 | 0.0% |
+| SFO | 148 | 28.9 | -3.2 | 32.2 | 18.2% |
+| EWR | 195 | 28.4 | -8.2 | 36.6 | 15.4% |
+| MIA | 169 | 22.3 | -9.8 | 32.1 | 10.1% |
+| ATL | 177 | 24.1 | -14.8 | 38.8 | 8.5% |
+| LAX | 140 | 21.3 | -14.0 | 35.3 | 3.6% |
 
-The shape is the point: two airports under comparable conditions sit at opposite extremes.
+Every airport shows a positive *departure* delay and a negative *arrival* delay: flights routinely
+make up half an hour in the air because airlines pad published schedules. Measuring arrivals alone,
+as the industry standard does, would hide origin-side problems entirely.
 
-Codeshare collapse is not a marginal correction. Of 500 source records, 177 physical flights
-carried a single marketing label, 71 carried two to four, and 21 carried five or more — one
-aircraft appeared under nine different airline flight numbers.
+**The question the project actually asks** — delays against the weather recorded at arrival
+(507 of 829 flights matched to an observation within 120 minutes):
+
+| Airport | Conditions | Flights | % late arrival |
+|---|---|---|---|
+| ATL | Clear | 47 | 14.9% |
+| ATL | Clouds | 68 | 8.8% |
+| EWR | Clear | 12 | 16.7% |
+| EWR | Clouds | 109 | 17.4% |
+| LAX | Clear | 85 | 5.9% |
+| MIA | Clouds | 26 | 15.4% |
+| MIA | Rain | 78 | 10.3% |
+| SFO | Clear | 82 | 22.0% |
+
+This is the pattern worth looking for. San Francisco under clear skies is late more often than
+Miami in actual rain, and Miami's *cloudy* hours are worse than its *rainy* ones. Whatever is
+delaying those flights, it is not the weather — which is the operational signal the pipeline was
+built to isolate.
+
+**Codeshare collapse is not a marginal correction.** Of 3,500 in-scope source records,
+415 physical flights carried a single marketing label, 283 carried two to four, and 131
+carried five or more — one aircraft appeared under 9 different airline flight numbers. Left
+uncollapsed, that aircraft's delay would have counted against 9 separate carriers.
 
 ## Status
 
