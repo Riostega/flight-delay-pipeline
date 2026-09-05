@@ -28,7 +28,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from pipeline.notify import _webhook_url, SLACK_TIMEOUT  # noqa: E402
+from pipeline.notify import _env_value, _webhook_url, SLACK_TIMEOUT  # noqa: E402
 
 import requests  # noqa: E402
 
@@ -47,6 +47,10 @@ FLIGHTS_STALE_HOURS = 30
 # the thing it monitors. Two hours keeps detection well inside the staleness
 # thresholds above while cutting that to ~6.
 FRESHNESS_INTERVAL_HOURS = 2
+
+# Timeout for the heartbeat ping. Short: a heartbeat that hangs would delay the
+# checks it is reporting on, and a missed ping is the signal anyway.
+HEARTBEAT_TIMEOUT = 10
 
 
 def _load_state():
@@ -181,6 +185,34 @@ def check_freshness():
                 pass
 
 
+def heartbeat(healthy):
+    """Ping an external dead-man's switch.
+
+    Every other check in this file runs on the host it monitors, which means
+    none of them can report that host being stopped, unreachable, or shut down
+    — the alerts would have to originate from the very machine that is gone,
+    and the symptom is silence rather than a message. Silence is
+    indistinguishable from healthy, so it needs inverting: an external service
+    expects a ping on a schedule and alerts when one fails to arrive.
+
+    Nothing here is specific to a provider. Any service exposing a ping URL
+    (healthchecks.io, Better Stack, Cronitor, a self-hosted equivalent) works,
+    and the /fail suffix convention is shared by all of them.
+
+    Failures to ping are swallowed: the watchdog's own checks matter more than
+    its ability to report to a third party, and a heartbeat outage should not
+    take the local checks down with it.
+    """
+    base = _env_value("HEARTBEAT_URL")
+    if not base:
+        return
+    url = base.rstrip("/") if healthy else base.rstrip("/") + "/fail"
+    try:
+        requests.get(url, timeout=HEARTBEAT_TIMEOUT)
+    except Exception:
+        print("watchdog: heartbeat ping failed")
+
+
 def post(text):
     webhook = _webhook_url()
     if not webhook:
@@ -252,6 +284,11 @@ def main():
             state.pop(name, None)
 
     _save_state(state)
+
+    # Ping last, so the heartbeat reflects the checks that just ran. A failing
+    # ping tells the external service to alert immediately rather than waiting
+    # for the grace period to lapse.
+    heartbeat(healthy=not problems)
 
     status = "; ".join(f"{k}: {v}" for k, v in problems.items()) or "all checks passed"
     if not freshness_ran:

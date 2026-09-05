@@ -29,8 +29,8 @@ SLACK_TIMEOUT = 10
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 
-def _webhook_url():
-    """Read the webhook from the environment, falling back to .env.
+def _env_value(name):
+    """Read one key from the environment, falling back to .env.
 
     The callback runs inside Airflow's own process, which systemd starts with
     only four Environment= lines — it never sources .env. Rather than add an
@@ -39,7 +39,7 @@ def _webhook_url():
     reads the single key it needs. .env stays the one place credentials live,
     which is the same rule the extract and load scripts follow.
     """
-    from_env = (os.getenv("SLACK_WEBHOOK_URL") or "").strip()
+    from_env = (os.getenv(name) or "").strip()
     if from_env:
         return from_env
 
@@ -50,12 +50,16 @@ def _webhook_url():
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 key, _, value = line.partition("=")
-                if key.strip() == "SLACK_WEBHOOK_URL":
+                if key.strip() == name:
                     return value.strip().strip("\'\"")
     except OSError:
         # No .env on this host is a normal state for a fresh clone.
         pass
     return ""
+
+
+def _webhook_url():
+    return _env_value("SLACK_WEBHOOK_URL")
 
 
 def _field(context, key, default="unknown"):
