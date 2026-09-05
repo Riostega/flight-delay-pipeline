@@ -69,6 +69,16 @@ OTHER = INK_MUTED
 st.set_page_config(page_title="Flight Reliability", page_icon="✈", layout="wide")
 
 
+# Snowflake raises these when the session is no longer usable, as opposed to
+# when the SQL itself is wrong. Only the former is worth reconnecting for.
+_CONNECTION_ERRORS = ("390114", "390111", "390104", "08001", "250002")
+
+
+def _is_connection_error(e: Exception) -> bool:
+    text = f"{getattr(e, 'errno', '')} {getattr(e, 'sqlstate', '')} {e}"
+    return any(code in text for code in _CONNECTION_ERRORS)
+
+
 @st.cache_resource
 def connect():
     g = lambda k: (os.getenv(k) or "").strip()
@@ -83,12 +93,29 @@ def connect():
     )
 
 
+def _run(sql: str) -> pd.DataFrame:
+    cur = connect().cursor()
+    try:
+        cur.execute(sql)
+        return pd.DataFrame(cur.fetchall(), columns=[c[0] for c in cur.description])
+    finally:
+        cur.close()
+
+
 @st.cache_data(ttl=300)
 def q(sql: str) -> pd.DataFrame:
-    cur = connect().cursor()
-    cur.execute(sql)
-    df = pd.DataFrame(cur.fetchall(), columns=[c[0] for c in cur.description])
-    cur.close()
+    try:
+        df = _run(sql)
+    except snowflake.connector.errors.Error as e:
+        # The connection is cached for the life of the session, so once it dies
+        # it stays dead: every later query fails and refreshing the page changes
+        # nothing, because the broken object is what gets handed back. Tokens do
+        # expire, networks do drop. Clear the cached connection and try once more
+        # so the dashboard heals itself instead of needing a restart.
+        if not _is_connection_error(e):
+            raise
+        connect.clear()
+        df = _run(sql)
     # Snowflake returns NUMBER as Decimal, which will not multiply with a float
     # and silently breaks axis padding and formatting. Coerce once here rather
     # than defending against it at every call site.
