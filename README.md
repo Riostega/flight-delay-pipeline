@@ -220,7 +220,7 @@ uncollapsed, that aircraft's delay would have counted against 9 separate carrier
 
 ## Testing and CI
 
-34 dbt tests run against the modelled layer, and two GitHub Actions workflows enforce them on every
+30 dbt tests run against the modelled layer, and two GitHub Actions workflows enforce them on every
 push and pull request.
 
 **The load-bearing test is `unique` on `flight_event_key`.** It is the executable proof that the
@@ -262,7 +262,7 @@ being analysed, and drops it afterwards in a step that always runs.
 | Transform (dbt) | Complete — staging models, airport dimension, fact table with weather join, 34 passing tests |
 | Orchestrate (Airflow) | Complete — two DAGs on decoupled schedules, running under `systemd` on EC2 |
 | Infrastructure | Complete — scripted provisioning, IAM role, versioned raw zone |
-| Testing and CI | Complete — 34 dbt tests, two workflows on every push |
+| Testing and CI | Complete — 30 dbt tests, two workflows on every push |
 | Analysis | Pending data accumulation |
 
 ## Setup
