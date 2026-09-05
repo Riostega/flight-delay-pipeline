@@ -7,3 +7,6 @@ logs/
 
 # Personal notes — not part of the published project
 INTERVIEW_NOTES.md
+
+# Temporary provisioning credentials — delete after EC2 setup
+.env.admin
