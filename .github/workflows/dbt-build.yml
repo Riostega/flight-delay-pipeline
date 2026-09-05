@@ -1,0 +1,74 @@
+# Full build and test against Snowflake. Requires secrets; skips cleanly when
+# they are absent so the workflow does not fail on a fork, or if the Snowflake
+# trial expires and the secrets are removed.
+#
+# Models are built into a separate CI schema so a test run cannot disturb the
+# production models. Sources are read from PUBLIC either way.
+name: dbt build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Are Snowflake secrets configured?
+        id: check
+        env:
+          ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+        run: |
+          if [ -n "$ACCOUNT" ]; then echo "ready=true" >> "$GITHUB_OUTPUT";
+          else echo "ready=false" >> "$GITHUB_OUTPUT"; echo "No Snowflake secrets - skipping."; fi
+
+      - uses: actions/setup-python@v5
+        if: steps.check.outputs.ready == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        if: steps.check.outputs.ready == 'true'
+        run: pip install -r requirements.txt
+
+      - name: Write dbt profile
+        if: steps.check.outputs.ready == 'true'
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+        run: |
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml <<EOF
+          flight_delay_pipeline:
+            target: ci
+            outputs:
+              ci:
+                type: snowflake
+                account: ${SNOWFLAKE_ACCOUNT}
+                user: ${SNOWFLAKE_USER}
+                password: ${SNOWFLAKE_PASSWORD}
+                role: ACCOUNTADMIN
+                database: ${SNOWFLAKE_DATABASE}
+                warehouse: ${SNOWFLAKE_WAREHOUSE}
+                schema: CI
+                threads: 1
+          EOF
+
+      - name: dbt build
+        if: steps.check.outputs.ready == 'true'
+        working-directory: flight_delay_pipeline
+        run: dbt build
+
+      - name: Drop the CI schema
+        # Always runs, so a failed build does not leave objects behind.
+        if: always() && steps.check.outputs.ready == 'true'
+        working-directory: flight_delay_pipeline
+        run: dbt run-operation drop_ci_schema || true

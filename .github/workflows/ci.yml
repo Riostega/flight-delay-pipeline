@@ -1,0 +1,57 @@
+# Fast checks that need no credentials, so they keep working even if the
+# Snowflake trial lapses. Catches broken refs, Jinja and SQL syntax errors,
+# malformed schema.yml, and Python syntax problems.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Python syntax
+        run: python -m compileall -q extract_pipeline.py run_snowflake_setup.py test_snowflake.py infra dags
+
+      - name: Airflow DAGs import cleanly
+        # Parses the DAG files without an Airflow install: catches syntax errors
+        # and obvious mistakes before they reach the scheduler.
+        run: python -m compileall -q dags
+
+      - name: dbt profile (dummy)
+        # dbt parse validates the project without connecting, so placeholder
+        # credentials are enough and no secrets are needed for this job.
+        run: |
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml <<'EOF'
+          flight_delay_pipeline:
+            target: ci
+            outputs:
+              ci:
+                type: snowflake
+                account: placeholder
+                user: placeholder
+                password: placeholder
+                role: ACCOUNTADMIN
+                database: FLIGHT_DELAY_PIPELINE
+                warehouse: FLIGHT_PIPELINE_WH
+                schema: PUBLIC
+                threads: 1
+          EOF
+
+      - name: dbt parse
+        working-directory: flight_delay_pipeline
+        run: dbt parse
