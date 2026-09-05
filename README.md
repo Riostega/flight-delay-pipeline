@@ -324,6 +324,18 @@ Provisioning is split so the free resources are created first and a mistake cann
 something billing. On the host, Airflow runs under `systemd` with `Restart=always`, so it
 survives both crashes and reboots.
 
+The host is a git checkout of this repository, so deploying a change is:
+
+```bash
+ssh -i ~/.ssh/flight-pipeline-key.pem ubuntu@<instance-ip> \
+  "cd ~/Flight_Delay_Pipeline && git pull"
+```
+
+It was previously updated by `rsync`, which depended on remembering to run it. A test fix
+once reached GitHub but not the host, and the scheduled run failed the next morning for a
+defect that had already been corrected. Pulling from the same source the repository shows
+removes that gap.
+
 The security group permits SSH from a single address and nothing else. The Airflow UI is reached
 over an SSH tunnel rather than by opening a port:
 
