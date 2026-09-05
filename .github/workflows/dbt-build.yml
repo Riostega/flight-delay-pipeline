@@ -64,11 +64,11 @@ jobs:
 
       - name: dbt build
         if: steps.check.outputs.ready == 'true'
-        working-directory: flight_delay_pipeline
+        working-directory: dbt
         run: dbt build
 
       - name: Drop the CI schema
         # Always runs, so a failed build does not leave objects behind.
         if: always() && steps.check.outputs.ready == 'true'
-        working-directory: flight_delay_pipeline
+        working-directory: dbt
         run: dbt run-operation drop_ci_schema || true

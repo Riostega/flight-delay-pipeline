@@ -63,7 +63,7 @@ models:
 
 seeds:
   - name: dim_airports
-    description: Airports in scope. Read by dbt and by extract_pipeline.py.
+    description: Airports in scope. Read by dbt and by pipeline/extract_pipeline.py.
     columns:
       - name: iata_code
         tests:

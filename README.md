@@ -188,18 +188,17 @@ pointing at the same Snowflake account.
 ## Running
 
 ```bash
-python3 extract_pipeline.py flights    # daily — quota-bound
-python3 extract_pipeline.py weather    # hourly
-python3 extract_pipeline.py all
+python3 pipeline/extract_pipeline.py flights   # daily — quota-bound
+python3 pipeline/extract_pipeline.py weather   # hourly
+python3 pipeline/extract_pipeline.py all
 
-python3 test_snowflake.py              # connection check
-python3 run_snowflake_setup.py                    # create warehouse/database/stages
-python3 run_snowflake_setup.py snowflake_load.sql # load new S3 files (no AWS credentials needed)
+python3 pipeline/test_snowflake.py                          # connection check
+python3 pipeline/run_snowflake_setup.py                     # create warehouse/database/stages
+python3 pipeline/run_snowflake_setup.py snowflake_load.sql  # load new files (no AWS credentials)
 
-cd flight_delay_pipeline               # dbt must run from the project directory
+cd dbt                                 # dbt must run from the project directory
 dbt seed                               # load dim_airports
-dbt run
-dbt test
+dbt build                              # run models and tests in dependency order
 ```
 
 `run_snowflake_setup.py` is idempotent — `COPY INTO` tracks load history per table, so re-running
@@ -247,23 +246,27 @@ An internet-facing Airflow can trigger arbitrary DAGs, so it is never exposed di
 ## Repository structure
 
 ```
-extract_pipeline.py          Extraction and S3 landing (flights + weather)
-snowflake_setup.sql          Warehouse, database, stages, staging tables (needs credentials)
-snowflake_load.sql           COPY INTO only (needs none)
-run_snowflake_setup.py       Executes either, statement-by-statement, injecting only what is used
-test_snowflake.py            Connection smoke test
+pipeline/
+  extract_pipeline.py        Extraction and S3 landing (flights + weather)
+  snowflake_setup.sql        Warehouse, database, stages, staging tables (needs credentials)
+  snowflake_load.sql         COPY INTO only (needs none)
+  run_snowflake_setup.py     Executes either, statement-by-statement, injecting only what is used
+  test_snowflake.py          Connection smoke test
 
-infra/
-  provision_ec2.py           IAM role, key pair, security group, instance
-  terminate_ec2.py           teardown
-
-dags/                        Airflow DAG definitions
-  flight_pipeline_daily.py   extract -> load -> dbt run -> dbt test
-  weather_hourly.py          weather collection on its own schedule
-
-flight_delay_pipeline/       dbt project
+dbt/
   models/staging/            sources.yml, stg_flights, stg_weather
   models/marts/              fct_flight_events and its tests
   seeds/dim_airports.csv     Airport scope and coordinates — read by dbt and the extractor
   tests/                     Singular tests
+  macros/                    drop_ci_schema — teardown for CI runs
+
+dags/
+  flight_pipeline_daily.py   extract -> load -> dbt run -> dbt test
+  weather_hourly.py          weather collection on its own schedule
+
+dashboard/app.py             Streamlit dashboard over the modelled layer
+
+infra/
+  provision_ec2.py           IAM role, key pair, security group, instance
+  terminate_ec2.py           teardown
 ```

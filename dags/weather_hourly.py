@@ -36,5 +36,5 @@ with DAG(
 
     extract_weather = BashOperator(
         task_id="extract_weather",
-        bash_command=f"cd {PROJECT_DIR} && {PYTHON} extract_pipeline.py weather",
+        bash_command=f"cd {PROJECT_DIR} && {PYTHON} pipeline/extract_pipeline.py weather",
     )

@@ -24,7 +24,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Python syntax
-        run: python -m compileall -q extract_pipeline.py run_snowflake_setup.py test_snowflake.py infra dags
+        run: python -m compileall -q pipeline infra dags dashboard
 
       - name: Airflow DAGs import cleanly
         # Parses the DAG files without an Airflow install: catches syntax errors
@@ -53,5 +53,5 @@ jobs:
           EOF
 
       - name: dbt parse
-        working-directory: flight_delay_pipeline
+        working-directory: dbt
         run: dbt parse

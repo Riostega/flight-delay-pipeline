@@ -13,7 +13,7 @@ tests/             singular tests
 macros/            drop_ci_schema — teardown for CI runs
 ```
 
-`dim_airports.csv` is read by dbt **and** by `extract_pipeline.py`, so the pipeline
+`dim_airports.csv` is read by dbt **and** by `pipeline/extract_pipeline.py`, so the pipeline
 and the warehouse cannot disagree about which airports are in scope.
 
 ## Grain

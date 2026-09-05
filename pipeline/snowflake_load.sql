@@ -2,7 +2,7 @@
 -- Snowflake Load — Flight Delay Pipeline
 -- Copies newly landed S3 files into the staging tables.
 --
--- Run with:  python3 run_snowflake_setup.py snowflake_load.sql
+-- Run with:  python3 pipeline/run_snowflake_setup.py snowflake_load.sql
 --
 -- Deliberately contains no credentials and no <PLACEHOLDER> tokens. The stages
 -- created by snowflake_setup.sql already hold everything needed to reach S3, so

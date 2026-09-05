@@ -13,8 +13,8 @@ load_dotenv()
 # file as a seed (dim_airports), so the pipeline and the warehouse cannot
 # disagree about scope.
 AIRPORTS_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "flight_delay_pipeline", "seeds", "dim_airports.csv"
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "dbt", "seeds", "dim_airports.csv"
 )
 
 # AviationStack free tier caps a single request at 100 records. One request
@@ -122,7 +122,7 @@ def run_weather(airports):
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "all"
     if mode not in ("flights", "weather", "all"):
-        sys.exit(f"Usage: python3 extract_pipeline.py [flights|weather|all]")
+        sys.exit(f"Usage: python3 pipeline/extract_pipeline.py [flights|weather|all]")
 
     airports = load_airports()
     print(f"{len(airports)} airports in scope: {', '.join(a['iata_code'] for a in airports)}")

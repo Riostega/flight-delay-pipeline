@@ -2,7 +2,7 @@
 -- Snowflake Setup — Flight Delay Pipeline
 -- Creates compute, storage, stages and staging tables.
 --
--- Run with:  python3 run_snowflake_setup.py snowflake_setup.sql
+-- Run with:  python3 pipeline/run_snowflake_setup.py snowflake_setup.sql
 --
 -- Needs AWS credentials, because Snowflake reads S3 with its own keys rather
 -- than through any IAM role. Run rarely, from a trusted machine. The daily

@@ -14,7 +14,7 @@ from airflow.providers.standard.operators.bash import BashOperator
 # Derived from this file's location so the same DAG works on the laptop and on
 # the EC2 host without edits.
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DBT_DIR = f"{PROJECT_DIR}/flight_delay_pipeline"
+DBT_DIR = f"{PROJECT_DIR}/dbt"
 
 # Airflow runs in its own virtualenv, which deliberately does not have this
 # project's dependencies (Airflow and dbt pin conflicting versions of jinja2,
@@ -50,7 +50,7 @@ with DAG(
 
     extract_flights = BashOperator(
         task_id="extract_flights",
-        bash_command=f"cd {PROJECT_DIR} && {PYTHON} extract_pipeline.py flights",
+        bash_command=f"cd {PROJECT_DIR} && {PYTHON} pipeline/extract_pipeline.py flights",
     )
 
     load_to_snowflake = BashOperator(
@@ -62,7 +62,7 @@ with DAG(
         #
         # Idempotent: COPY INTO tracks load history per table, so this loads
         # only files landed since the last run.
-        bash_command=f"cd {PROJECT_DIR} && {PYTHON} run_snowflake_setup.py snowflake_load.sql",
+        bash_command=f"cd {PROJECT_DIR} && {PYTHON} pipeline/run_snowflake_setup.py snowflake_load.sql",
     )
 
     dbt_run = BashOperator(

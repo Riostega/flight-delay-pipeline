@@ -1,7 +1,7 @@
 """Execute a Snowflake SQL file one statement at a time.
 
-    python3 run_snowflake_setup.py                      # snowflake_setup.sql
-    python3 run_snowflake_setup.py snowflake_load.sql   # daily load
+    python3 pipeline/run_snowflake_setup.py                      # snowflake_setup.sql
+    python3 pipeline/run_snowflake_setup.py snowflake_load.sql   # daily load
 
 Environment-specific values live in .env, never in the .sql file (which is
 tracked in git). Placeholders written as <VAR_NAME> are substituted here at
@@ -15,13 +15,17 @@ load asks for nothing the box does not have.
 
 import os
 import sys
+from pathlib import Path
 
 import snowflake.connector
 from dotenv import load_dotenv
 
 load_dotenv()
 
-SETUP_FILE = sys.argv[1] if len(sys.argv) > 1 else "snowflake_setup.sql"
+# SQL files sit beside this script, so they resolve relative to it rather than
+# to the working directory — the DAG invokes this from the repository root.
+SQL_DIR = Path(__file__).resolve().parent
+SETUP_FILE = SQL_DIR / (sys.argv[1] if len(sys.argv) > 1 else "snowflake_setup.sql")
 
 # Placeholders substituted into the SQL before execution.
 PLACEHOLDER_VARS = [
