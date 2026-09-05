@@ -1,0 +1,312 @@
+"""Flight reliability dashboard.
+
+Reads the modelled layer in Snowflake — fct_flight_events and the staging views —
+and presents airport and carrier reliability alongside the weather conditions
+recorded at arrival.
+
+Run with:  streamlit run dashboard/app.py
+"""
+
+import os
+from decimal import Decimal
+from pathlib import Path
+
+import pandas as pd
+import plotly.graph_objects as go
+import snowflake.connector
+import streamlit as st
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+# Palette slots from the project's validated categorical set. Order is the
+# CVD-safety mechanism, not decoration, so these are used in the given order and
+# never cycled.
+BLUE, ORANGE, AQUA = "#2a78d6", "#eb6834", "#1baf7a"
+# Single-hue sequential ramp, light to dark, for magnitude.
+SEQ = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"]
+GOOD, WARNING, CRITICAL = "#0ca30c", "#fab219", "#d03b3b"
+INK, INK_MUTED, GRID = "#0b0b0b", "#52514e", "#e8e7e3"
+
+# Aqua sits below 3:1 on a light surface, so every chart using it ships visible
+# value labels and a table view — the relief the palette check requires.
+WEATHER_COLORS = {"Clear": BLUE, "Clouds": ORANGE, "Rain": AQUA}
+
+st.set_page_config(page_title="Flight Reliability", page_icon="✈", layout="wide")
+
+
+@st.cache_resource
+def connect():
+    g = lambda k: (os.getenv(k) or "").strip()
+    return snowflake.connector.connect(
+        account=g("SNOWFLAKE_ACCOUNT"), user=g("SNOWFLAKE_USER"),
+        password=g("SNOWFLAKE_PASSWORD"), warehouse=g("SNOWFLAKE_WAREHOUSE"),
+        database=g("SNOWFLAKE_DATABASE"), schema=g("SNOWFLAKE_SCHEMA"),
+    )
+
+
+@st.cache_data(ttl=300)
+def q(sql: str) -> pd.DataFrame:
+    cur = connect().cursor()
+    cur.execute(sql)
+    df = pd.DataFrame(cur.fetchall(), columns=[c[0] for c in cur.description])
+    cur.close()
+    # Snowflake returns NUMBER as Decimal, which will not multiply with a float
+    # and silently breaks axis padding and formatting. Coerce once here rather
+    # than defending against it at every call site.
+    for col in df.columns:
+        if df[col].apply(lambda v: isinstance(v, Decimal)).any():
+            df[col] = df[col].astype(float)
+    return df
+
+
+def base_layout(fig, height=380, xtitle="", ytitle=""):
+    """Recessive axes and grid; text in ink tokens, never a series colour."""
+    fig.update_layout(
+        height=height, margin=dict(l=8, r=8, t=8, b=8),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color=INK_MUTED, size=13),
+        xaxis=dict(title=xtitle, gridcolor=GRID, zerolinecolor=GRID, linecolor=GRID),
+        yaxis=dict(title=ytitle, gridcolor=GRID, zerolinecolor=GRID, linecolor=GRID),
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0, title=""),
+        hoverlabel=dict(bgcolor="white", font_size=13),
+    )
+    return fig
+
+
+def seq_scale(values, reverse=False):
+    """Map magnitudes onto the single-hue ramp, more is darker."""
+    if len(values) == 0:
+        return []
+    lo, hi = min(values), max(values)
+    span = (hi - lo) or 1
+    idx = [int(round((v - lo) / span * (len(SEQ) - 1))) for v in values]
+    if reverse:
+        idx = [len(SEQ) - 1 - i for i in idx]
+    return [SEQ[i] for i in idx]
+
+
+st.title("Flight Delay Reliability")
+st.caption(
+    "Which airports and carriers are systematically less reliable — and how much "
+    "of that is explained by weather rather than operations."
+)
+
+tab_overview, tab_airports, tab_weather, tab_pipeline = st.tabs(
+    ["Overview", "Airports", "Weather vs operations", "Pipeline health"]
+)
+
+# ---------------------------------------------------------------- Overview
+with tab_overview:
+    k = q("""
+        SELECT COUNT(*) AS flights,
+               COUNT(DISTINCT arrival_airport) AS airports,
+               COUNT(DISTINCT operating_carrier_name) AS carriers,
+               ROUND(100.0 * SUM(CASE WHEN is_delayed_arrival THEN 1 ELSE 0 END) / COUNT(*), 1) AS pct_late,
+               ROUND(100.0 * SUM(CASE WHEN has_weather_match THEN 1 ELSE 0 END) / COUNT(*), 1) AS pct_weather,
+               ROUND(AVG(minutes_recovered), 1) AS avg_recovered
+        FROM fct_flight_events
+    """).iloc[0]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Flights tracked", f"{int(k.FLIGHTS):,}", help="One row per physical flight, codeshares collapsed")
+    c2.metric("Late arrivals", f"{k.PCT_LATE}%", help="More than 15 minutes late — the US DOT threshold")
+    c3.metric("Recovered in air", f"{k.AVG_RECOVERED:.0f} min", help="Departure delay minus arrival delay: schedule padding")
+    c4.metric("Weather coverage", f"{k.PCT_WEATHER}%", help="Flights matched to an observation within 120 minutes of arrival")
+
+    st.divider()
+    st.subheader("Late arrivals by airport")
+
+    d = q("""
+        SELECT arrival_airport AS airport, COUNT(*) AS flights,
+               ROUND(100.0 * SUM(CASE WHEN is_delayed_arrival THEN 1 ELSE 0 END) / COUNT(*), 1) AS pct_late
+        FROM fct_flight_events GROUP BY 1 ORDER BY pct_late DESC
+    """)
+    fig = go.Figure(go.Bar(
+        x=d.PCT_LATE, y=d.AIRPORT, orientation="h",
+        marker=dict(color=seq_scale(d.PCT_LATE.tolist()), cornerradius=4),
+        text=[f"{v}%" for v in d.PCT_LATE], textposition="outside",
+        textfont=dict(color=INK_MUTED),
+        customdata=d.FLIGHTS,
+        hovertemplate="<b>%{y}</b><br>%{x}% late<br>%{customdata} flights<extra></extra>",
+    ))
+    fig.update_yaxes(autorange="reversed")
+    fig.update_xaxes(range=[0, max(d.PCT_LATE.max() * 1.25, 1)], ticksuffix="%")
+    st.plotly_chart(base_layout(fig, 300, "Share of arrivals more than 15 min late"), width='stretch')
+    with st.expander("Table view"):
+        st.dataframe(d, hide_index=True, width='stretch')
+
+# ---------------------------------------------------------------- Airports
+with tab_airports:
+    st.subheader("Departure delay against arrival delay")
+    st.caption(
+        "Flights routinely recover time in the air, because airlines pad published "
+        "schedules. Measuring arrival alone hides problems at the origin."
+    )
+
+    d = q("""
+        SELECT arrival_airport AS airport,
+               ROUND(AVG(departure_delay_minutes), 1) AS avg_dep,
+               ROUND(AVG(arrival_delay_minutes), 1) AS avg_arr,
+               COUNT(*) AS flights
+        FROM fct_flight_events GROUP BY 1 ORDER BY avg_dep DESC
+    """)
+
+    # Dumbbell: before -> after per item, one hue in two shades.
+    fig = go.Figure()
+    for _, r in d.iterrows():
+        fig.add_trace(go.Scatter(
+            x=[r.AVG_DEP, r.AVG_ARR], y=[r.AIRPORT, r.AIRPORT], mode="lines",
+            line=dict(color=GRID, width=2), showlegend=False, hoverinfo="skip"))
+    fig.add_trace(go.Scatter(
+        x=d.AVG_DEP, y=d.AIRPORT, mode="markers", name="Departure",
+        marker=dict(color=SEQ[5], size=13, line=dict(color="white", width=2)),
+        hovertemplate="<b>%{y}</b><br>departure %{x} min<extra></extra>"))
+    fig.add_trace(go.Scatter(
+        x=d.AVG_ARR, y=d.AIRPORT, mode="markers", name="Arrival",
+        marker=dict(color=SEQ[2], size=13, line=dict(color="white", width=2)),
+        hovertemplate="<b>%{y}</b><br>arrival %{x} min<extra></extra>"))
+    fig.add_vline(x=0, line_width=2, line_color=INK_MUTED, opacity=0.35)
+    fig.update_yaxes(autorange="reversed")
+    st.plotly_chart(base_layout(fig, 340, "Average delay, minutes (0 = on time)"), width='stretch')
+    with st.expander("Table view"):
+        st.dataframe(d, hide_index=True, width='stretch')
+
+    st.divider()
+    st.subheader("Operating carriers")
+    st.caption("Attributed to the carrier that actually flew the aircraft, not the one that sold the seat.")
+
+    min_flights = st.slider("Minimum flights to include", 1, 25, 5)
+    c = q(f"""
+        SELECT operating_carrier_name AS carrier, COUNT(*) AS flights,
+               ROUND(AVG(arrival_delay_minutes), 1) AS avg_arr_delay,
+               ROUND(100.0 * SUM(CASE WHEN is_delayed_arrival THEN 1 ELSE 0 END) / COUNT(*), 1) AS pct_late
+        FROM fct_flight_events GROUP BY 1
+        HAVING COUNT(*) >= {min_flights} ORDER BY pct_late DESC LIMIT 15
+    """)
+    if c.empty:
+        st.info("No carriers meet that threshold yet — the sample is still small.")
+    else:
+        fig = go.Figure(go.Bar(
+            x=c.PCT_LATE, y=c.CARRIER, orientation="h",
+            marker=dict(color=seq_scale(c.PCT_LATE.tolist()), cornerradius=4),
+            text=[f"{v}%" for v in c.PCT_LATE], textposition="outside",
+            textfont=dict(color=INK_MUTED), customdata=c.FLIGHTS,
+            hovertemplate="<b>%{y}</b><br>%{x}% late<br>%{customdata} flights<extra></extra>"))
+        fig.update_yaxes(autorange="reversed")
+        fig.update_xaxes(range=[0, max(c.PCT_LATE.max() * 1.3, 1)], ticksuffix="%")
+        st.plotly_chart(base_layout(fig, max(280, 34 * len(c)), "Share of arrivals more than 15 min late"),
+                        width='stretch')
+        with st.expander("Table view"):
+            st.dataframe(c, hide_index=True, width='stretch')
+
+# ------------------------------------------------- Weather vs operations
+with tab_weather:
+    st.subheader("Delay by weather condition at arrival")
+
+    cov = q("SELECT COUNT(*) AS n, SUM(CASE WHEN has_weather_match THEN 1 ELSE 0 END) AS matched FROM fct_flight_events").iloc[0]
+    if int(cov.MATCHED) == 0:
+        st.warning(
+            "No flights are matched to weather yet. Weather history only extends back to "
+            "when hourly collection began, and AviationStack reports arrivals with a lag, "
+            "so the two windows take time to overlap."
+        )
+    else:
+        st.caption(
+            f"{int(cov.MATCHED):,} of {int(cov.N):,} flights matched to an observation within "
+            "120 minutes of arrival. Readings staler than that are discarded rather than reported."
+        )
+
+    w = q("""
+        SELECT arrival_airport AS airport, weather_main AS condition, COUNT(*) AS flights,
+               ROUND(AVG(arrival_delay_minutes), 1) AS avg_arr_delay
+        FROM fct_flight_events WHERE has_weather_match
+        GROUP BY 1, 2 ORDER BY 1, 2
+    """)
+
+    if w.empty:
+        st.info("Nothing to plot until the weather join populates.")
+    else:
+        conditions = [c for c in ["Clear", "Clouds", "Rain"] if c in set(w.CONDITION)]
+        conditions += [c for c in sorted(set(w.CONDITION)) if c not in conditions]
+        fig = go.Figure()
+        for cond in conditions:
+            sub = w[w.CONDITION == cond]
+            fig.add_trace(go.Bar(
+                name=cond, x=sub.AIRPORT, y=sub.AVG_ARR_DELAY,
+                marker=dict(color=WEATHER_COLORS.get(cond, SEQ[4]), cornerradius=4,
+                            line=dict(color="white", width=2)),
+                text=[f"{v:.0f}" for v in sub.AVG_ARR_DELAY], textposition="outside",
+                textfont=dict(color=INK_MUTED), customdata=sub.FLIGHTS,
+                hovertemplate="<b>%{x} — " + cond + "</b><br>%{y} min average<br>%{customdata} flights<extra></extra>"))
+        fig.update_layout(barmode="group", bargap=0.28, bargroupgap=0.06)
+        fig.add_hline(y=0, line_width=2, line_color=INK_MUTED, opacity=0.35)
+        st.plotly_chart(base_layout(fig, 400, "", "Average arrival delay, minutes"), width='stretch')
+
+        st.caption(
+            "Negative means arriving early. The finding worth looking for is an airport "
+            "whose delays do **not** track its weather — that is an operational story, "
+            "not a meteorological one."
+        )
+        with st.expander("Table view"):
+            st.dataframe(w, hide_index=True, width='stretch')
+
+# ------------------------------------------------------- Pipeline health
+with tab_pipeline:
+    st.subheader("Pipeline health")
+
+    f = q("""
+        SELECT
+          (SELECT COUNT(*) FROM stg_flights_raw)  AS flight_files,
+          (SELECT COUNT(*) FROM stg_weather_raw)  AS weather_files,
+          (SELECT COUNT(*) FROM stg_flights)      AS staged_rows,
+          (SELECT COUNT(*) FROM fct_flight_events) AS physical_flights,
+          (SELECT MAX(observed_at) FROM stg_weather) AS last_weather
+    """).iloc[0]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Raw flight files", f"{int(f.FLIGHT_FILES):,}")
+    c2.metric("Raw weather files", f"{int(f.WEATHER_FILES):,}")
+    c3.metric("Staged rows", f"{int(f.STAGED_ROWS):,}")
+    c4.metric("Physical flights", f"{int(f.PHYSICAL_FLIGHTS):,}",
+              delta=f"-{int(f.STAGED_ROWS) - int(f.PHYSICAL_FLIGHTS):,} collapsed",
+              delta_color="off", help="Codeshare labels and re-pull duplicates removed")
+    st.caption(f"Most recent weather observation: {f.LAST_WEATHER} UTC")
+
+    st.divider()
+    st.subheader("Codeshare collapse")
+    st.caption(
+        "One aircraft can appear under many airline flight numbers. Without collapsing "
+        "them, a single delayed flight would be counted once per carrier that sold seats on it."
+    )
+
+    cs = q("""
+        SELECT marketing_label_count AS labels, COUNT(*) AS flights
+        FROM fct_flight_events GROUP BY 1 ORDER BY 1
+    """)
+    fig = go.Figure(go.Bar(
+        x=cs.LABELS, y=cs.FLIGHTS,
+        marker=dict(color=seq_scale(cs.LABELS.tolist()), cornerradius=4),
+        text=cs.FLIGHTS, textposition="outside", textfont=dict(color=INK_MUTED),
+        hovertemplate="<b>%{x} marketing label(s)</b><br>%{y} physical flights<extra></extra>"))
+    st.plotly_chart(base_layout(fig, 320, "Marketing flight numbers per physical flight", "Flights"),
+                    width='stretch')
+
+    st.divider()
+    st.subheader("Weather match freshness")
+    st.caption("How stale the matched observation was. Anything beyond 120 minutes is discarded.")
+
+    lag = q("""
+        SELECT CASE
+                 WHEN weather_lag_minutes <= 30  THEN '0-30 min'
+                 WHEN weather_lag_minutes <= 60  THEN '31-60 min'
+                 WHEN weather_lag_minutes <= 120 THEN '61-120 min'
+                 ELSE 'over 120 (discarded)' END AS bucket,
+               COUNT(*) AS flights
+        FROM fct_flight_events WHERE weather_lag_minutes IS NOT NULL
+        GROUP BY 1 ORDER BY 1
+    """)
+    if lag.empty:
+        st.info("No weather matches yet.")
+    else:
+        st.dataframe(lag, hide_index=True, width='stretch')

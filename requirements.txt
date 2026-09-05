@@ -11,3 +11,8 @@ snowflake-connector-python==4.7.1
 # Transformation
 dbt-core==1.12.2
 dbt-snowflake==1.12.0
+
+# Dashboard
+streamlit==1.57.0
+plotly==7.0.0
+pandas==2.2.2
