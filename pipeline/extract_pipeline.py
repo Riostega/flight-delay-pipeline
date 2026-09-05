@@ -111,24 +111,36 @@ def upload_to_s3(data, prefix, iata):
 
 
 def run_flights(airports):
-    """Daily task — AviationStack's free quota is the binding constraint."""
+    """Daily task — AviationStack's free quota is the binding constraint.
+
+    Returns the number of airports collected.
+    """
     print("FLIGHTS")
+    collected = 0
     for airport in airports:
         iata = airport["iata_code"]
         data = fetch_flights(iata)
         if data:
             upload_to_s3(data, "raw/flights", iata)
+            collected += 1
+    return collected
 
 
 def run_weather(airports):
     """Hourly task — OpenWeatherMap's quota is generous, and dense weather
-    observations are what make the flight/weather join meaningful."""
+    observations are what make the flight/weather join meaningful.
+
+    Returns the number of airports collected.
+    """
     print("WEATHER")
+    collected = 0
     for airport in airports:
         iata = airport["iata_code"]
         data = fetch_weather(airport["latitude"], airport["longitude"], iata)
         if data:
             upload_to_s3(data, "raw/weather", iata)
+            collected += 1
+    return collected
 
 
 if __name__ == "__main__":
@@ -142,7 +154,23 @@ if __name__ == "__main__":
     airports = load_airports()
     print(f"{len(airports)} airports in scope: {', '.join(a['iata_code'] for a in airports)}")
 
+    attempted = 0
+    collected = 0
     if mode in ("flights", "all"):
-        run_flights(airports)
+        attempted += len(airports)
+        collected += run_flights(airports)
     if mode in ("weather", "all"):
-        run_weather(airports)
+        attempted += len(airports)
+        collected += run_weather(airports)
+
+    # Exit non-zero when nothing at all was collected, so Airflow fails the task
+    # and retries rather than reporting a green run. Without this, an exhausted
+    # API quota — the expected failure roughly three weeks into each month —
+    # looks identical to a successful run: no files land, no alarm is raised,
+    # and the only symptom is data quietly ceasing to grow.
+    #
+    # A partial failure is logged but tolerated: one airport failing is not a
+    # reason to discard the four that succeeded, and the next run will catch up.
+    print(f"collected {collected}/{attempted}")
+    if collected == 0:
+        sys.exit("FAILED: no data collected from any airport — check API quota and credentials")

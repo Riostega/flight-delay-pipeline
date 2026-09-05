@@ -78,6 +78,23 @@ physical_flights as (
 
 ),
 
+weather as (
+
+    -- OpenWeatherMap reports the station's observation time, not the fetch
+    -- time, so fetching more often than the station updates stores the same
+    -- measurement repeatedly. Readings have always agreed, but leaving several
+    -- identical rows per timestamp would make the as-of match pick among them
+    -- arbitrarily. One row per airport per observation, newest file wins.
+    select *
+    from {{ ref('stg_weather') }}
+    where iata_code is not null
+    qualify row_number() over (
+        partition by iata_code, observed_at
+        order by source_file desc
+    ) = 1
+
+),
+
 flight_events as (
 
     select
@@ -154,7 +171,7 @@ with_weather as (
         datediff('minute', w.observed_at, f.arrival_actual_utc)   as weather_lag_minutes
 
     from flight_events f
-    asof join {{ ref('stg_weather') }} w
+    asof join weather w
         match_condition (f.arrival_actual_utc >= w.observed_at)
         on f.arrival_airport = w.iata_code
 
