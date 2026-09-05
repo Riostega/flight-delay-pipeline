@@ -9,9 +9,18 @@
 -- corrupt carrier-level reliability, which is the project's central question,
 -- so this model collapses to the operating flight.
 --
--- The same key removes re-pull duplicates for free: the extract is a live
--- snapshot, so consecutive runs return overlapping flights, and the same
--- aircraft pulled twice resolves to one row.
+-- Duplicates arrive from two directions and are removed in two steps, because
+-- collapsing them together would give the wrong answer:
+--
+--   1. deduplicated     the extract is a live snapshot, so consecutive runs
+--                       return overlapping flights and the same marketing label
+--                       is stored more than once. Removed on the marketing key.
+--   2. physical_flights several marketing labels describe one aircraft. Removed
+--                       on the operating key, counting the labels first.
+--
+-- Doing only the second would still yield one row per flight, but
+-- marketing_label_count would count re-pulls as extra carriers: a flight seen
+-- twice under five labels would report six.
 
 with scoped as (
 
