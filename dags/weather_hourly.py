@@ -38,3 +38,17 @@ with DAG(
         task_id="extract_weather",
         bash_command=f"cd {PROJECT_DIR} && {PYTHON} pipeline/extract_pipeline.py weather",
     )
+
+    load_weather = BashOperator(
+        task_id="load_weather",
+        # Loading hourly as well as collecting hourly. Landing in S3 every hour
+        # but only loading once a day left Snowflake permanently hours behind
+        # the bucket, which made the dashboard's freshness check report an
+        # outage every day between loads — an alarm that fires daily during
+        # healthy operation is worse than none, because it trains you to ignore
+        # it. COPY INTO skips files it has already seen, so the extra runs cost
+        # one brief warehouse wake-up.
+        bash_command=f"cd {PROJECT_DIR} && {PYTHON} pipeline/run_snowflake_setup.py snowflake_load.sql",
+    )
+
+    extract_weather >> load_weather
