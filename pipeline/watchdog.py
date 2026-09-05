@@ -133,9 +133,28 @@ def check_freshness():
             login_timeout=60,
         )
         cur = conn.cursor()
-        cur.execute("select datediff('hour', max(observed_at), current_timestamp()) from stg_weather")
+
+        # sysdate(), not current_timestamp(). observed_at is TIMESTAMP_NTZ holding
+        # UTC, while current_timestamp() returns TIMESTAMP_LTZ in the session's
+        # timezone (US/Central here). Comparing them subtracts a 6-hour offset,
+        # which made every age six hours too low — negative, in fact, so the
+        # staleness test could never be true and the check would have reported
+        # healthy forever. sysdate() is UTC and matches how the data is stored.
+        cur.execute("select datediff('hour', max(observed_at), sysdate()) from stg_weather")
         weather_age = cur.fetchone()[0]
-        cur.execute("select datediff('hour', max(loaded_at), current_timestamp()) from stg_flights")
+
+        # stg_flights has no load timestamp, so freshness comes from when the
+        # newest source file landed. That measures whether the pipeline is
+        # delivering, which is the question here — the flights' own timestamps
+        # would only say how recent the *flights* were.
+        cur.execute("""
+            select datediff('hour', max(to_timestamp_ntz(
+                       regexp_substr(source_file, '([0-9]{4}-[0-9]{2}-[0-9]{2})', 1, 1, 'e', 1)
+                       || ' ' ||
+                       regexp_substr(source_file, '_([0-9]{6})\\.json', 1, 1, 'e', 1),
+                       'YYYY-MM-DD HH24MISS')), sysdate())
+            from stg_flights
+        """)
         flights_age = cur.fetchone()[0]
 
         problems = []
