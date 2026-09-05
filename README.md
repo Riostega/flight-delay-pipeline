@@ -175,9 +175,10 @@ bucket — deletes there become recoverable, closing the one hole that mattered.
 
 ## Sample output
 
-Figures below come from an early accumulation window and will shift as data builds. They are shown
-because the *shape* is what the pipeline exists to detect, not because the sample is yet large
-enough to conclude from.
+Figures below are a snapshot taken on **5 September 2026**, from an early accumulation window. They are
+shown because the *shape* is what the pipeline exists to detect, not because the sample is yet
+large enough to conclude from — and they will not match the warehouse once collection has moved
+on. The dashboard reads live.
 
 **Reliability by airport** — 829 physical flights:
 
