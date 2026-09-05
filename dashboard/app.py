@@ -55,12 +55,16 @@ else:
     SEQ = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"]
     PAIR_STRONG, PAIR_SOFT = "#184f95", "#6da7ec"
 
-GOOD, WARNING, CRITICAL = "#0ca30c", "#fab219", "#d03b3b"
+# Three validated categorical slots, assigned in fixed order to the three most
+# common weather conditions; everything rarer folds into "Other" in the
+# de-emphasis ink. A fourth generated hue would be indistinguishable under CVD,
+# and the vocabulary is open-ended — fog, snow and thunderstorms all appear.
+CONDITION_SLOTS = [BLUE, ORANGE, AQUA]
+OTHER = INK_MUTED
 
 # In light mode aqua sits below 3:1 on the surface, so the relief rule applies:
 # every chart carries visible value labels and a table view. Kept in both modes
 # for consistency.
-WEATHER_COLORS = {"Clear": BLUE, "Clouds": ORANGE, "Rain": AQUA}
 
 st.set_page_config(page_title="Flight Reliability", page_icon="✈", layout="wide")
 
@@ -72,6 +76,10 @@ def connect():
         account=g("SNOWFLAKE_ACCOUNT"), user=g("SNOWFLAKE_USER"),
         password=g("SNOWFLAKE_PASSWORD"), warehouse=g("SNOWFLAKE_WAREHOUSE"),
         database=g("SNOWFLAKE_DATABASE"), schema=g("SNOWFLAKE_SCHEMA"),
+        # The connection is cached for the life of the session. Without
+        # heartbeats Snowflake expires it while the dashboard sits idle, and
+        # every query afterwards fails until the app is restarted.
+        client_session_keep_alive=True,
     )
 
 
@@ -105,16 +113,18 @@ def base_layout(fig, height=380, xtitle="", ytitle=""):
     return fig
 
 
-def seq_scale(values, reverse=False):
-    """Map magnitudes onto the single-hue ramp, more is darker."""
+def seq_scale(values):
+    """Map magnitudes onto the single-hue ramp.
+
+    SEQ is ordered so that the last step is the most prominent against whichever
+    surface is active — darker on light, brighter on dark — so more always reads
+    as more.
+    """
     if len(values) == 0:
         return []
     lo, hi = min(values), max(values)
     span = (hi - lo) or 1
-    idx = [int(round((v - lo) / span * (len(SEQ) - 1))) for v in values]
-    if reverse:
-        idx = [len(SEQ) - 1 - i for i in idx]
-    return [SEQ[i] for i in idx]
+    return [SEQ[int(round((v - lo) / span * (len(SEQ) - 1)))] for v in values]
 
 
 st.title("Flight Delay Reliability")
@@ -248,24 +258,44 @@ with tab_weather:
             "120 minutes of arrival. Readings staler than that are discarded rather than reported."
         )
 
+    # Ranking and folding happen in SQL so the average stays a true average over
+    # flights rather than an average of per-condition averages.
     w = q("""
-        SELECT arrival_airport AS airport, weather_main AS condition, COUNT(*) AS flights,
-               ROUND(AVG(arrival_delay_minutes), 1) AS avg_arr_delay
-        FROM fct_flight_events WHERE has_weather_match
-        GROUP BY 1, 2 ORDER BY 1, 2
+        WITH ranked AS (
+            SELECT weather_main,
+                   ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) AS rn
+            FROM fct_flight_events
+            WHERE has_weather_match
+            GROUP BY 1
+        )
+        SELECT f.arrival_airport AS airport,
+               CASE WHEN r.rn <= 3 THEN f.weather_main ELSE 'Other' END AS condition,
+               MIN(r.rn) AS rank,
+               COUNT(*) AS flights,
+               ROUND(AVG(f.arrival_delay_minutes), 1) AS avg_arr_delay
+        FROM fct_flight_events f
+        JOIN ranked r ON r.weather_main = f.weather_main
+        WHERE f.has_weather_match
+        GROUP BY 1, 2
+        ORDER BY 1, 2
     """)
 
     if w.empty:
         st.info("Nothing to plot until the weather join populates.")
     else:
-        conditions = [c for c in ["Clear", "Clouds", "Rain"] if c in set(w.CONDITION)]
-        conditions += [c for c in sorted(set(w.CONDITION)) if c not in conditions]
+        # Colour follows the condition's overall rank, not its position in this
+        # chart, so filtering never repaints the survivors.
+        order = w[["CONDITION", "RANK"]].drop_duplicates().sort_values("RANK")
+        colours = {
+            row.CONDITION: (CONDITION_SLOTS[int(row.RANK) - 1] if row.CONDITION != "Other" else OTHER)
+            for row in order.itertuples()
+        }
         fig = go.Figure()
-        for cond in conditions:
+        for cond in order.CONDITION:
             sub = w[w.CONDITION == cond]
             fig.add_trace(go.Bar(
                 name=cond, x=sub.AIRPORT, y=sub.AVG_ARR_DELAY,
-                marker=dict(color=WEATHER_COLORS.get(cond, BLUE), cornerradius=4,
+                marker=dict(color=colours[cond], cornerradius=4,
                             line=dict(color=SURFACE, width=2)),
                 text=[f"{v:.0f}" for v in sub.AVG_ARR_DELAY], textposition="outside",
                 textfont=dict(color=INK_MUTED), customdata=sub.FLIGHTS,
@@ -280,7 +310,7 @@ with tab_weather:
             "not a meteorological one."
         )
         with st.expander("Table view"):
-            st.dataframe(w, hide_index=True, width='stretch')
+            st.dataframe(w.drop(columns=["RANK"]), hide_index=True, width='stretch')
 
 # ------------------------------------------------------- Pipeline health
 with tab_pipeline:
@@ -325,14 +355,17 @@ with tab_pipeline:
 
     st.divider()
     st.subheader("Weather match freshness")
-    st.caption("How stale the matched observation was. Anything beyond 120 minutes is discarded.")
+    st.caption("How stale the matched observation was. Anything beyond the threshold is discarded.")
 
+    # Buckets key off has_weather_match rather than repeating the threshold, so
+    # this stays correct if the dbt variable changes.
     lag = q("""
         SELECT CASE
-                 WHEN weather_lag_minutes <= 30  THEN '0-30 min'
-                 WHEN weather_lag_minutes <= 60  THEN '31-60 min'
-                 WHEN weather_lag_minutes <= 120 THEN '61-120 min'
-                 ELSE 'over 120 (discarded)' END AS bucket,
+                 WHEN NOT has_weather_match     THEN 'd. too stale, discarded'
+                 WHEN weather_lag_minutes <= 30 THEN 'a. 0-30 min'
+                 WHEN weather_lag_minutes <= 60 THEN 'b. 31-60 min'
+                 ELSE                                'c. 61 min to threshold'
+               END AS bucket,
                COUNT(*) AS flights
         FROM fct_flight_events WHERE weather_lag_minutes IS NOT NULL
         GROUP BY 1 ORDER BY 1

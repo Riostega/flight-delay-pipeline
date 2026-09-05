@@ -15,11 +15,11 @@ role instead, so there is nothing on the box worth stealing.
 
 import json
 import os
-import subprocess
 import sys
 import time
 
 import boto3
+import requests
 from botocore.exceptions import ClientError
 from dotenv import dotenv_values
 
@@ -48,7 +48,13 @@ iam = boto3.client("iam", **kw)
 
 
 def my_ip():
-    return subprocess.check_output(["curl", "-s", "https://checkip.amazonaws.com"], text=True).strip()
+    """The address the security group will allow SSH from.
+
+    Uses requests rather than shelling out to curl: one fewer external
+    dependency, works the same on any platform, and carries a timeout so a
+    hung lookup cannot stall provisioning.
+    """
+    return requests.get("https://checkip.amazonaws.com", timeout=10).text.strip()
 
 
 def ensure_role():
