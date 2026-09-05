@@ -49,11 +49,32 @@ def fetch_flights(arrival_iata):
     if response.status_code != 200:
         print(f"  flights {arrival_iata}: request failed {response.status_code} {response.text[:120]}")
         return None
-    else:
-        data = response.json()
-        count = len(data.get("data", []))
-        print(f"  flights {arrival_iata}: {count} landed flights")
-        return data
+
+    data = response.json()
+
+    # AviationStack reports quota exhaustion, a rejected key, and rate limiting
+    # with HTTP 200 and an "error" object in the body rather than a 4xx status.
+    # Treating that payload as a successful pull defeats the exit-code guard at
+    # the bottom of this file: the error JSON lands in S3, COPY INTO loads it,
+    # `lateral flatten` over the absent `data` key yields zero rows, and the DAG
+    # reports success while the warehouse quietly stops growing. Quota
+    # exhaustion is the expected end-of-month state, not an edge case.
+    if "error" in data:
+        err = data["error"] if isinstance(data["error"], dict) else {}
+        print(f"  flights {arrival_iata}: API error "
+              f"{err.get('code', data['error'])} — {err.get('message', '')}")
+        return None
+
+    # A 200 carrying neither "error" nor "data" is not a real response either.
+    # Landing it would write a file that flattens to nothing, which downstream
+    # is indistinguishable from an airport that truly had no landed flights.
+    if "data" not in data:
+        print(f"  flights {arrival_iata}: unexpected response shape {str(data)[:120]}")
+        return None
+
+    count = len(data["data"])
+    print(f"  flights {arrival_iata}: {count} landed flights")
+    return data
 
 
 def fetch_weather(lat, lon, iata):
