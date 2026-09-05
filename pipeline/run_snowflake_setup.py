@@ -20,7 +20,7 @@ from pathlib import Path
 import snowflake.connector
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 # SQL files sit beside this script, so they resolve relative to it rather than
 # to the working directory — the DAG invokes this from the repository root.

@@ -5,17 +5,22 @@ import csv
 import sys
 import json
 from datetime import datetime
+from pathlib import Path
+
 from dotenv import load_dotenv
 
-load_dotenv()
+REPO_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(REPO_ROOT / ".env")
+
+# Both APIs are called from a scheduled task. Without a timeout a hung request
+# blocks the Airflow task indefinitely — no failure, no retry, just data
+# quietly ceasing to arrive.
+REQUEST_TIMEOUT = 30
 
 # Single source of truth for which airports are in scope. dbt loads this same
 # file as a seed (dim_airports), so the pipeline and the warehouse cannot
 # disagree about scope.
-AIRPORTS_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "dbt", "seeds", "dim_airports.csv"
-)
+AIRPORTS_FILE = REPO_ROOT / "dbt" / "seeds" / "dim_airports.csv"
 
 # AviationStack free tier caps a single request at 100 records. One request
 # costs the same whether it returns 5 rows or 100, so always ask for the max.
@@ -33,13 +38,13 @@ def fetch_flights(arrival_iata):
     url = "http://api.aviationstack.com/v1/flights"
 
     params = {
-        "access_key" : api_key,
-        "arr_iata" : arrival_iata,
-        "flight_status" : "landed",
-        "limit" : FLIGHTS_PER_REQUEST
+        "access_key": api_key,
+        "arr_iata": arrival_iata,
+        "flight_status": "landed",
+        "limit": FLIGHTS_PER_REQUEST,
     }
 
-    response = requests.get(url, params = params)
+    response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
 
     if response.status_code != 200:
         print(f"  flights {arrival_iata}: request failed {response.status_code} {response.text[:120]}")
@@ -60,10 +65,10 @@ def fetch_weather(lat, lon, iata):
         "lat": lat,
         "lon": lon,
         "appid": api_key,
-        "units": "imperial"
+        "units": "imperial",
     }
 
-    response = requests.get(url, params = params)
+    response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
 
     if response.status_code != 200:
         print(f"  weather {iata}: request failed {response.status_code} {response.text[:120]}")
@@ -75,11 +80,14 @@ def fetch_weather(lat, lon, iata):
 
 
 def upload_to_s3(data, prefix, iata):
+    # Credentials are passed explicitly when present and fall through to
+    # boto3's own chain when absent — which is how the EC2 host reaches S3 via
+    # its IAM role with no keys on disk.
     s3 = boto3.client(
         "s3",
-        aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY"),
-        region_name = os.getenv("AWS_REGION")
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        region_name=os.getenv("AWS_REGION"),
     )
     now = datetime.now()
 
@@ -120,9 +128,12 @@ def run_weather(airports):
 
 
 if __name__ == "__main__":
-    mode = sys.argv[1] if len(sys.argv) > 1 else "all"
+    # The mode is required rather than defaulting. "flights" spends five of
+    # roughly a hundred monthly AviationStack calls, and a command that costs
+    # quota should not be what you get by typing nothing.
+    mode = sys.argv[1] if len(sys.argv) > 1 else None
     if mode not in ("flights", "weather", "all"):
-        sys.exit(f"Usage: python3 pipeline/extract_pipeline.py [flights|weather|all]")
+        sys.exit("Usage: python3 pipeline/extract_pipeline.py <flights|weather|all>")
 
     airports = load_airports()
     print(f"{len(airports)} airports in scope: {', '.join(a['iata_code'] for a in airports)}")

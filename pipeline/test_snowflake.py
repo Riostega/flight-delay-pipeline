@@ -1,8 +1,10 @@
 import snowflake.connector
 import os
+from pathlib import Path
+
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 conn = snowflake.connector.connect(
     account=os.getenv("SNOWFLAKE_ACCOUNT"),

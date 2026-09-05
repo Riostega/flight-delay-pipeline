@@ -149,6 +149,21 @@ with_weather as (
         )
         on f.arrival_airport = w.iata_code
 
+),
+
+scored as (
+
+    -- The staleness threshold is applied once, here. Every weather column below
+    -- keys off this flag rather than repeating the comparison, so the columns
+    -- and the flag cannot drift apart if the threshold changes.
+    select
+        *,
+        coalesce(
+            weather_lag_minutes <= {{ var('weather_max_lag_minutes', 120) }},
+            false
+        ) as has_weather_match
+    from with_weather
+
 )
 
 select
@@ -185,24 +200,15 @@ select
     -- retained regardless so the freshness of every match stays inspectable.
     weather_observed_at,
     weather_lag_minutes,
-    coalesce(weather_lag_minutes <= {{ var('weather_max_lag_minutes', 120) }}, false)
-                                                                 as has_weather_match,
+    has_weather_match,
 
-    case when weather_lag_minutes <= {{ var('weather_max_lag_minutes', 120) }}
-         then weather_main end                                   as weather_main,
-    case when weather_lag_minutes <= {{ var('weather_max_lag_minutes', 120) }}
-         then weather_description end                            as weather_description,
-    case when weather_lag_minutes <= {{ var('weather_max_lag_minutes', 120) }}
-         then temp_f end                                         as weather_temp_f,
-    case when weather_lag_minutes <= {{ var('weather_max_lag_minutes', 120) }}
-         then humidity end                                       as weather_humidity,
-    case when weather_lag_minutes <= {{ var('weather_max_lag_minutes', 120) }}
-         then wind_speed end                                     as weather_wind_speed,
-    case when weather_lag_minutes <= {{ var('weather_max_lag_minutes', 120) }}
-         then wind_gust end                                      as weather_wind_gust,
-    case when weather_lag_minutes <= {{ var('weather_max_lag_minutes', 120) }}
-         then visibility_m end                                   as weather_visibility_m,
-    case when weather_lag_minutes <= {{ var('weather_max_lag_minutes', 120) }}
-         then cloud_cover_pct end                                as weather_cloud_cover_pct
+    case when has_weather_match then weather_main        end      as weather_main,
+    case when has_weather_match then weather_description end      as weather_description,
+    case when has_weather_match then temp_f              end      as weather_temp_f,
+    case when has_weather_match then humidity            end      as weather_humidity,
+    case when has_weather_match then wind_speed          end      as weather_wind_speed,
+    case when has_weather_match then wind_gust           end      as weather_wind_gust,
+    case when has_weather_match then visibility_m        end      as weather_visibility_m,
+    case when has_weather_match then cloud_cover_pct     end      as weather_cloud_cover_pct
 
-from with_weather
+from scored
