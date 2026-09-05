@@ -24,7 +24,9 @@ flowchart LR
     F --> G[fact + dimension<br/>tables]
 ```
 
-Airflow orchestrates the sequence on two schedules: flights daily, weather hourly.
+Airflow orchestrates the sequence on two schedules — flights daily, weather hourly — running
+under `systemd` on an EC2 instance, so collection does not depend on any workstation being
+awake.
 
 **Extract → Land → Load → Transform.** Raw API responses are landed in S3 exactly as received
 and never modified. Snowflake holds only derived data. Everything downstream of S3 is
@@ -39,6 +41,7 @@ reproducible from it.
 | Snowflake | Warehouse — `VARIANT` staging tables plus modeled fact/dimension tables |
 | dbt | Transformation, testing, and documentation of the modeled layer |
 | Airflow | Scheduling, retries, and task dependencies |
+| AWS EC2 | Always-on host running Airflow under `systemd`, provisioned by script |
 
 ## Design decisions
 
@@ -108,6 +111,35 @@ The same principle applies to credentials: `snowflake_setup.sql` is version-cont
 `<PLACEHOLDER>` tokens substituted at runtime from `.env`, so no secret is ever written to a
 tracked file.
 
+
+### The host holds no cloud credentials
+
+The EC2 instance has no AWS keys on disk and no `~/.aws` directory. It assumes an IAM role
+scoped to this project's bucket alone, and boto3 resolves temporary rotating credentials through
+the instance metadata service. There is nothing on the box worth stealing, and a compromise
+reaches one bucket rather than an account.
+
+Making that true required separating two things that had been conflated. The daily job
+originally ran the full Snowflake setup script, which recreates external stages — and
+`CREATE STAGE` embeds AWS credentials, because Snowflake reads S3 with its own keys and cannot
+use an instance role. So `snowflake_setup.sql` now creates infrastructure only and is run rarely
+from a trusted machine, while `snowflake_load.sql` contains just the `COPY INTO` statements,
+references no credentials at all, and is what the pipeline runs daily. The runner resolves only
+the placeholders a given file actually uses, so a credential-free file runs on a
+credential-free host.
+
+### Every layer is disposable except one
+
+```
+  EC2 instance   rebuild from infra/provision_ec2.py     ~5 minutes
+  Snowflake      rebuild from S3                          done twice
+  S3 raw zone    nothing upstream to rebuild from         ← the only irrecoverable layer
+```
+
+Recognising that asymmetry is what makes a teardown script safe to keep in the repository: it
+destroys something designed to be destroyed. It is also why versioning is enabled on the raw
+bucket — deletes there become recoverable, closing the one hole that mattered.
+
 ## Sample output
 
 A single pull returns 100 landed flights per airport, which resolve to 269 distinct physical
@@ -135,8 +167,9 @@ aircraft appeared under nine different airline flight numbers.
 | Extract | Complete |
 | Land (S3) | Complete |
 | Load (Snowflake) | Complete |
-| Transform (dbt) | Complete — staging models, airport dimension, fact table, 19 passing tests |
-| Orchestrate (Airflow) | Complete — two DAGs on decoupled schedules, verified end to end |
+| Transform (dbt) | Complete — staging models, airport dimension, fact table with weather join, 22 passing tests |
+| Orchestrate (Airflow) | Complete — two DAGs on decoupled schedules, running under `systemd` on EC2 |
+| Infrastructure | Complete — scripted provisioning, IAM role, versioned raw zone |
 | Analysis | Pending data accumulation |
 
 ## Setup
@@ -160,7 +193,8 @@ python3 extract_pipeline.py weather    # hourly
 python3 extract_pipeline.py all
 
 python3 test_snowflake.py              # connection check
-python3 run_snowflake_setup.py         # create warehouse/database/stages, COPY INTO from S3
+python3 run_snowflake_setup.py                    # create warehouse/database/stages
+python3 run_snowflake_setup.py snowflake_load.sql # load new S3 files (no AWS credentials needed)
 
 cd flight_delay_pipeline               # dbt must run from the project directory
 dbt seed                               # load dim_airports
@@ -170,6 +204,30 @@ dbt test
 
 `run_snowflake_setup.py` is idempotent — `COPY INTO` tracks load history per table, so re-running
 loads only files landed since the last run.
+
+## Deployment
+
+Collection runs continuously on an EC2 instance rather than a workstation, since a scheduled job
+does not survive a laptop going to sleep.
+
+```bash
+python3 infra/provision_ec2.py           # IAM role, key pair, security group (all free)
+python3 infra/provision_ec2.py --launch  # ...and the instance
+python3 infra/terminate_ec2.py --yes     # tear it down
+```
+
+Provisioning is split so the free resources are created first and a mistake cannot leave
+something billing. On the host, Airflow runs under `systemd` with `Restart=always`, so it
+survives both crashes and reboots.
+
+The security group permits SSH from a single address and nothing else. The Airflow UI is reached
+over an SSH tunnel rather than by opening a port:
+
+```bash
+ssh -i ~/.ssh/flight-pipeline-key.pem -N -L 8080:localhost:8080 ubuntu@<instance-ip>
+```
+
+An internet-facing Airflow can trigger arbitrary DAGs, so it is never exposed directly.
 
 ## Known limitations
 
@@ -183,14 +241,21 @@ loads only files landed since the last run.
 - **Carrier names arrive inconsistently cased** between the direct and codeshare fields, and are
   normalized during transformation.
 - **Sampling is bounded to five airports**, so conclusions do not generalize beyond them.
+- **The host runs on a `t3.micro`**, which has less memory than Airflow comfortably wants. It is
+  viable with swap and has not been OOM-killed, but there is little headroom.
 
 ## Repository structure
 
 ```
 extract_pipeline.py          Extraction and S3 landing (flights + weather)
-snowflake_setup.sql          Warehouse, database, stages, staging tables, COPY INTO
-run_snowflake_setup.py       Executes the above statement-by-statement, injecting secrets
+snowflake_setup.sql          Warehouse, database, stages, staging tables (needs credentials)
+snowflake_load.sql           COPY INTO only (needs none)
+run_snowflake_setup.py       Executes either, statement-by-statement, injecting only what is used
 test_snowflake.py            Connection smoke test
+
+infra/
+  provision_ec2.py           IAM role, key pair, security group, instance
+  terminate_ec2.py           teardown
 
 dags/                        Airflow DAG definitions
   flight_pipeline_daily.py   extract -> load -> dbt run -> dbt test
