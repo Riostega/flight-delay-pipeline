@@ -1,8 +1,12 @@
 -- ============================================
 -- Snowflake Setup — Flight Delay Pipeline
--- Creates compute + storage, then loads raw JSON from S3 into staging tables.
+-- Creates compute, storage, stages and staging tables.
 --
--- Run with:  python3 run_snowflake_setup.py
+-- Run with:  python3 run_snowflake_setup.py snowflake_setup.sql
+--
+-- Needs AWS credentials, because Snowflake reads S3 with its own keys rather
+-- than through any IAM role. Run rarely, from a trusted machine. The daily
+-- pipeline uses snowflake_load.sql, which needs no credentials at all.
 --
 -- Values in <ANGLE_BRACKETS> are placeholders substituted at runtime from .env
 -- by run_snowflake_setup.py. Never hardcode credentials in this file — it is
@@ -58,13 +62,7 @@ CREATE TABLE IF NOT EXISTS stg_flights_raw (
   source_file STRING
 );
 
--- 6a. Load flight files from S3. Snowflake tracks load history per table, so
--- re-running skips files already loaded and picks up only new ones.
-COPY INTO stg_flights_raw (raw_data, source_file)
-  FROM (
-    SELECT $1, metadata$filename
-    FROM @raw_flights_stage (FILE_FORMAT => flight_pipeline_json_format)
-  );
+
 
 -- ============================================
 -- 4b. Stage — pointer to the weather S3 folder
@@ -79,17 +77,3 @@ CREATE TABLE IF NOT EXISTS stg_weather_raw (
   raw_data    VARIANT,
   source_file STRING
 );
-
--- 6b. Load weather files from S3 into the staging table
-COPY INTO stg_weather_raw (raw_data, source_file)
-  FROM (
-    SELECT $1, metadata$filename
-    FROM @raw_weather_stage (FILE_FORMAT => flight_pipeline_json_format)
-  );
-
--- ============================================
--- Verification — row counts, not full dumps (each row is a whole JSON file)
--- ============================================
-SELECT 'stg_flights_raw' AS table_name, COUNT(*) AS files_loaded FROM stg_flights_raw
-UNION ALL
-SELECT 'stg_weather_raw', COUNT(*) FROM stg_weather_raw;

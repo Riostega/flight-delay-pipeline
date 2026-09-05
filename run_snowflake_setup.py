@@ -1,8 +1,16 @@
-"""Execute snowflake_setup.sql one statement at a time.
+"""Execute a Snowflake SQL file one statement at a time.
+
+    python3 run_snowflake_setup.py                      # snowflake_setup.sql
+    python3 run_snowflake_setup.py snowflake_load.sql   # daily load
 
 Environment-specific values live in .env, never in the .sql file (which is
 tracked in git). Placeholders written as <VAR_NAME> are substituted here at
 runtime, so .env stays the single source of truth.
+
+Only the variables a given file actually references are required. That is what
+lets snowflake_load.sql run on the EC2 host, which has no AWS credentials at
+all: the stages already hold what Snowflake needs to reach S3, so the daily
+load asks for nothing the box does not have.
 """
 
 import os
@@ -13,7 +21,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SETUP_FILE = "snowflake_setup.sql"
+SETUP_FILE = sys.argv[1] if len(sys.argv) > 1 else "snowflake_setup.sql"
 
 # Placeholders substituted into the SQL before execution.
 PLACEHOLDER_VARS = [
@@ -45,8 +53,12 @@ def load_statements(path):
     with open(path) as f:
         sql_text = f.read()
 
+    # Resolve only the placeholders this file actually uses, so a file needing
+    # no credentials can run on a host that has none.
     for name in PLACEHOLDER_VARS:
-        sql_text = sql_text.replace(f"<{name}>", env(name))
+        token = f"<{name}>"
+        if token in sql_text:
+            sql_text = sql_text.replace(token, env(name))
 
     statements = [clean_statement(s) for s in sql_text.split(";")]
     return [s for s in statements if s]

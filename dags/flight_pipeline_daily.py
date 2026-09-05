@@ -5,20 +5,24 @@ Airflow DAG rather than four cron entries: dbt must not run if the Snowflake
 load failed, or it would silently model stale data and report success.
 """
 
+import os
 from datetime import datetime, timedelta
 
 from airflow.sdk import DAG
 from airflow.providers.standard.operators.bash import BashOperator
 
-PROJECT_DIR = "/Users/josh/Flight_Delay_Pipeline"
+# Derived from this file's location so the same DAG works on the laptop and on
+# the EC2 host without edits.
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DBT_DIR = f"{PROJECT_DIR}/flight_delay_pipeline"
 
 # Airflow runs in its own virtualenv, which deliberately does not have this
 # project's dependencies (Airflow and dbt pin conflicting versions of jinja2,
-# pydantic and requests). Tasks therefore shell out to the system interpreter
-# rather than importing the pipeline.
-PYTHON = "/usr/local/bin/python3"
-DBT = "/Library/Frameworks/Python.framework/Versions/3.12/bin/dbt"
+# pydantic and requests). Tasks therefore shell out to a separate interpreter
+# rather than importing the pipeline. The service definition overrides these
+# per host; the defaults are the macOS paths.
+PYTHON = os.environ.get("PIPELINE_PYTHON", "/usr/local/bin/python3")
+DBT = os.environ.get("PIPELINE_DBT", "/Library/Frameworks/Python.framework/Versions/3.12/bin/dbt")
 
 default_args = {
     # One retry, not the usual three: each flights attempt spends 5 of roughly
@@ -51,9 +55,14 @@ with DAG(
 
     load_to_snowflake = BashOperator(
         task_id="load_to_snowflake",
+        # snowflake_load.sql, not snowflake_setup.sql: the daily job copies new
+        # files and nothing more. Recreating stages every day would be wasteful,
+        # and it would require AWS credentials on the host — the load path
+        # deliberately needs none, so the EC2 box carries no AWS keys.
+        #
         # Idempotent: COPY INTO tracks load history per table, so this loads
         # only files landed since the last run.
-        bash_command=f"cd {PROJECT_DIR} && {PYTHON} run_snowflake_setup.py",
+        bash_command=f"cd {PROJECT_DIR} && {PYTHON} run_snowflake_setup.py snowflake_load.sql",
     )
 
     dbt_run = BashOperator(

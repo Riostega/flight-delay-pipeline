@@ -7,13 +7,14 @@ flight/weather join meaningful rather than matching every flight to a single
 coarse daily reading.
 """
 
+import os
 from datetime import datetime, timedelta
 
 from airflow.sdk import DAG
 from airflow.providers.standard.operators.bash import BashOperator
 
-PROJECT_DIR = "/Users/josh/Flight_Delay_Pipeline"
-PYTHON = "/usr/local/bin/python3"
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PYTHON = os.environ.get("PIPELINE_PYTHON", "/usr/local/bin/python3")
 
 with DAG(
     dag_id="weather_hourly",
