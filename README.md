@@ -345,6 +345,45 @@ ssh -i ~/.ssh/flight-pipeline-key.pem -N -L 8080:localhost:8080 ubuntu@<instance
 
 An internet-facing Airflow can trigger arbitrary DAGs, so it is never exposed directly.
 
+## Monitoring
+
+Two mechanisms, because they catch different failures.
+
+**Task failures** — both DAGs attach an `on_failure_callback` to `default_args`, so
+every task alerts to Slack when it fails. The callback runs at the moment something is
+already broken, which dictates its design: it never raises (an exception inside a
+callback would bury the original failure under an unrelated traceback), never blocks
+(a 10-second timeout, since the scheduler waits on it), and never logs the webhook URL,
+which is a credential. It is inert when `SLACK_WEBHOOK_URL` is unset, so a fresh clone
+still runs.
+
+**Everything else** — `pipeline/watchdog.py` runs on a systemd timer independent of
+Airflow, because the callback is structurally unable to report failures where nothing
+runs at all:
+
+| Failure | Caught by |
+|---|---|
+| A task runs and fails | `on_failure_callback` |
+| Scheduler wedged or stopped | watchdog (service state) |
+| DAG dropped by an import error | watchdog (dagbag check) |
+| Data going stale while every task passes | watchdog (freshness) |
+| Instance stopped outright | neither — needs an external dead-man's switch |
+
+That last row is the honest limit: nothing running on the box can report the box being
+gone, and silence is indistinguishable from health.
+
+Liveness checks are local and run every 30 minutes. The freshness check queries
+Snowflake, which wakes the warehouse for its 60-second minimum billing period, so it is
+gated to once every 2 hours — at the liveness cadence it would cost roughly 24 credits a
+month against a pipeline that consumes about 13. Alerts are throttled through a state
+file: an ongoing problem re-alerts at most every 6 hours, and recovery is announced once.
+
+```bash
+python3 pipeline/watchdog.py                      # run the checks once
+systemctl list-timers pipeline-watchdog.timer     # when it next fires
+journalctl -u pipeline-watchdog.service -n 20     # what it last found
+```
+
 ## Known limitations
 
 - **AviationStack's free tier is a live snapshot, not a historical archive.** Data accumulates
@@ -369,6 +408,11 @@ An internet-facing Airflow can trigger arbitrary DAGs, so it is never exposed di
   detection is by looking rather than by being told.
 - **The host runs on a `t3.micro`**, which has less memory than Airflow comfortably wants. It is
   viable with swap and has not been OOM-killed, but there is little headroom.
+
+- **A stopped instance reports nothing.** Failure alerting and the watchdog both
+  run on the host they monitor, so an instance that is stopped or unreachable produces
+  silence rather than an alert. Closing this needs an external dead-man's switch that
+  expects a periodic ping and alerts on its absence.
 
 ## Repository structure
 
