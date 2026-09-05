@@ -8,6 +8,7 @@ coarse daily reading.
 """
 
 import os
+import sys
 from datetime import datetime, timedelta
 
 from airflow.sdk import DAG
@@ -15,6 +16,13 @@ from airflow.providers.standard.operators.bash import BashOperator
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PYTHON = os.environ.get("PIPELINE_PYTHON", "/usr/local/bin/python3")
+
+# The tasks shell out to a separate interpreter, but the failure callback runs
+# inside Airflow's own process, so this one module has to be importable here.
+# It depends only on os/requests, both of which Airflow already provides.
+if PROJECT_DIR not in sys.path:
+    sys.path.insert(0, PROJECT_DIR)
+from pipeline.notify import slack_alert
 
 with DAG(
     dag_id="weather_hourly",
@@ -26,6 +34,9 @@ with DAG(
     catchup=False,
     max_active_runs=1,
     default_args={
+        # Attached to default_args rather than to one task, so every task in
+        # the DAG alerts — a failed load matters as much as a failed extract.
+        "on_failure_callback": slack_alert,
         # Weather calls are cheap against the quota, so retry more freely than
         # the flights DAG does.
         "retries": 2,

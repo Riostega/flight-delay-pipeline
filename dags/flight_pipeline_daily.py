@@ -6,6 +6,7 @@ load failed, or it would silently model stale data and report success.
 """
 
 import os
+import sys
 from datetime import datetime, timedelta
 
 from airflow.sdk import DAG
@@ -16,6 +17,13 @@ from airflow.providers.standard.operators.bash import BashOperator
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DBT_DIR = f"{PROJECT_DIR}/dbt"
 
+# The tasks shell out to a separate interpreter, but the failure callback runs
+# inside Airflow's own process, so this one module has to be importable here.
+# It depends only on os/requests, both of which Airflow already provides.
+if PROJECT_DIR not in sys.path:
+    sys.path.insert(0, PROJECT_DIR)
+from pipeline.notify import slack_alert
+
 # Airflow runs in its own virtualenv, which deliberately does not have this
 # project's dependencies (Airflow and dbt pin conflicting versions of jinja2,
 # pydantic and requests). Tasks therefore shell out to a separate interpreter
@@ -25,6 +33,9 @@ PYTHON = os.environ.get("PIPELINE_PYTHON", "/usr/local/bin/python3")
 DBT = os.environ.get("PIPELINE_DBT", "/Library/Frameworks/Python.framework/Versions/3.12/bin/dbt")
 
 default_args = {
+    # Attached to default_args rather than to one task, so every task in
+    # the DAG alerts — a failed load matters as much as a failed extract.
+    "on_failure_callback": slack_alert,
     # One retry, not the usual three: each flights attempt spends 5 of roughly
     # 100 monthly AviationStack calls, so aggressive retries burn the quota.
     "retries": 1,
