@@ -40,6 +40,14 @@ REALERT_HOURS = 6
 WEATHER_STALE_HOURS = 3
 FLIGHTS_STALE_HOURS = 30
 
+# The liveness checks are local and free, so they run on every tick. The
+# freshness check is not: each query wakes the warehouse for its 60s minimum
+# billing period, and at a 30-minute cadence that costs ~24 credits/month
+# against a pipeline that consumes ~13. Monitoring should not cost more than
+# the thing it monitors. Two hours keeps detection well inside the staleness
+# thresholds above while cutting that to ~6.
+FRESHNESS_INTERVAL_HOURS = 2
+
 
 def _load_state():
     try:
@@ -191,16 +199,33 @@ def main():
     airflow_python = os.environ.get("WATCHDOG_AIRFLOW_PYTHON", "/home/ubuntu/airflow-venv/bin/python")
     airflow_home = os.environ.get("AIRFLOW_HOME", "/home/ubuntu/airflow")
 
-    checks = {
-        "scheduler": check_scheduler(),
-        "dags": check_dag_health(airflow_python, airflow_home),
-        "freshness": check_freshness(),
-    }
-    problems = {k: v for k, v in checks.items() if v}
-
     state = _load_state()
     now = datetime.now(timezone.utc)
     host = socket.gethostname()
+
+    checks = {
+        "scheduler": check_scheduler(),
+        "dags": check_dag_health(airflow_python, airflow_home),
+    }
+
+    # Only reach for Snowflake when enough time has passed to justify waking the
+    # warehouse. When it is skipped, any outstanding freshness problem is left
+    # in the state file untouched rather than being treated as recovered.
+    last_fresh = state.get("_last_freshness")
+    due = True
+    if last_fresh:
+        try:
+            due = now - datetime.fromisoformat(last_fresh) > timedelta(hours=FRESHNESS_INTERVAL_HOURS)
+        except ValueError:
+            due = True
+    if due:
+        checks["freshness"] = check_freshness()
+        state["_last_freshness"] = now.isoformat()
+        freshness_ran = True
+    else:
+        freshness_ran = False
+
+    problems = {k: v for k, v in checks.items() if v}
 
     for name, detail in problems.items():
         last = state.get(name)
@@ -215,6 +240,13 @@ def main():
             state[name] = now.isoformat()
 
     for name in list(state):
+        # Keys prefixed with "_" are bookkeeping, not conditions. And a check
+        # that did not run this tick says nothing about whether it recovered —
+        # announcing recovery there would clear a problem still outstanding.
+        if name.startswith("_"):
+            continue
+        if name == "freshness" and not freshness_ran:
+            continue
         if name not in problems:
             post(f":white_check_mark: *pipeline watchdog* ({host})\n> {name}: recovered")
             state.pop(name, None)
@@ -222,6 +254,8 @@ def main():
     _save_state(state)
 
     status = "; ".join(f"{k}: {v}" for k, v in problems.items()) or "all checks passed"
+    if not freshness_ran:
+        status += " (freshness skipped — not due)"
     print(f"watchdog {now.isoformat()} — {status}")
     return 0
 
