@@ -35,10 +35,20 @@ import requests  # noqa: E402
 STATE_FILE = REPO_ROOT / ".watchdog_state.json"
 REALERT_HOURS = 6
 
-# Weather runs hourly; flights daily. The thresholds allow one missed run plus
-# slack, so a single transient failure that self-heals on retry stays quiet.
+# These thresholds are COUPLED TO THE DAG SCHEDULES. Changing a schedule without
+# changing the matching threshold here produces one of two silent failures: a
+# threshold that is too tight false-alarms every cycle until the channel is
+# ignored, and one that is too loose stops reporting real outages.
+#
+#   weather_hourly        every hour        -> 3h  allows one missed run
+#   flight_pipeline_daily every other day   -> 54h allows the full 48h gap + 6h
+#
+# The flights value was 30 when that DAG ran daily. When the schedule moved to
+# every other day to fit AviationStack's 100-request monthly quota, this was not
+# updated, and the watchdog reported a false outage for the back half of every
+# cycle. If you change "0 9 */2 * *", change this in the same commit.
 WEATHER_STALE_HOURS = 3
-FLIGHTS_STALE_HOURS = 30
+FLIGHTS_STALE_HOURS = 54
 
 # The liveness checks are local and free, so they run on every tick. The
 # freshness check is not: each query wakes the warehouse for its 60s minimum
