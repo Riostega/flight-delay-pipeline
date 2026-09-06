@@ -8,6 +8,7 @@ Run with:  streamlit run dashboard/app.py
 """
 
 import os
+import sys
 from decimal import Decimal
 from pathlib import Path
 
@@ -17,7 +18,19 @@ import snowflake.connector
 import streamlit as st
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(REPO_ROOT / ".env")
+
+# Freshness thresholds are shared with the watchdog rather than duplicated here.
+# They are derived from the DAG schedules, and a copy in this file drifted out of
+# date the last time a schedule changed.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from pipeline.thresholds import (  # noqa: E402
+    WEATHER_STALE_MINUTES,
+    FLIGHTS_STALE_HOURS,
+    FLIGHTS_CADENCE,
+)
 
 def theme_mode() -> str:
     """Which validated palette to draw with.
@@ -369,16 +382,19 @@ with tab_pipeline:
 
     wx_age, fl_age = fresh.WEATHER_AGE_MIN, fresh.FLIGHTS_AGE_HR
     cols = st.columns(2)
-    # Weather runs hourly and flights daily, so these are roughly one missed
-    # run's worth of slack before something is genuinely wrong.
-    if wx_age is not None and wx_age > 120:
+    # Thresholds come from pipeline/thresholds.py so this panel and the watchdog
+    # always agree, and so neither can be left behind by a schedule change.
+    if wx_age is not None and wx_age > WEATHER_STALE_MINUTES:
         cols[0].error(f"Weather is {wx_age/60:.1f}h stale — hourly collection may have stopped")
     else:
         cols[0].success(f"Weather current ({wx_age:.0f} min old)" if wx_age is not None else "No weather yet")
-    if fl_age is not None and fl_age > 30:
-        cols[1].error(f"Newest flight arrival is {fl_age:.0f}h old — daily collection may have stopped")
+    if fl_age is not None and fl_age > FLIGHTS_STALE_HOURS:
+        cols[1].error(f"Newest flight arrival is {fl_age:.0f}h old — collection may have stopped")
     else:
-        cols[1].success(f"Flights current (newest arrival {fl_age:.0f}h ago)" if fl_age is not None else "No flights yet")
+        cols[1].success(
+            f"Flights current (newest arrival {fl_age:.0f}h ago, collected {FLIGHTS_CADENCE})"
+            if fl_age is not None else "No flights yet"
+        )
 
     st.caption(f"Most recent weather observation: {f.LAST_WEATHER} UTC")
 
