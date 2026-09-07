@@ -46,18 +46,25 @@ jobs:
           SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
         run: |
           mkdir -p ~/.dbt
-          cat > ~/.dbt/profiles.yml <<EOF
+          # Quoted heredoc, and dbt resolves the values itself via env_var().
+          # Interpolating secrets into YAML is unsafe: a value starting with
+          # * or & is a YAML anchor (parse error, or a silent null), one
+          # containing ': ' fails to parse, an all-digit password becomes an
+          # int rather than a str, and trailing whitespace is stripped. Several
+          # of those fail SILENTLY, so a password rotation could break CI with
+          # an authentication error and no indication why.
+          cat > ~/.dbt/profiles.yml <<'EOF'
           flight_delay_pipeline:
             target: ci
             outputs:
               ci:
                 type: snowflake
-                account: ${SNOWFLAKE_ACCOUNT}
-                user: ${SNOWFLAKE_USER}
-                password: ${SNOWFLAKE_PASSWORD}
+                account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+                user: "{{ env_var('SNOWFLAKE_USER') }}"
+                password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
                 role: ACCOUNTADMIN
-                database: ${SNOWFLAKE_DATABASE}
-                warehouse: ${SNOWFLAKE_WAREHOUSE}
+                database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
+                warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE') }}"
                 schema: CI
                 threads: 1
           EOF
@@ -65,6 +72,12 @@ jobs:
       - name: dbt build
         if: steps.check.outputs.ready == 'true'
         working-directory: dbt
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
         run: dbt build
 
       - name: Dashboard renders
@@ -85,4 +98,10 @@ jobs:
         # Always runs, so a failed build does not leave objects behind.
         if: always() && steps.check.outputs.ready == 'true'
         working-directory: dbt
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
         run: dbt run-operation drop_ci_schema || true

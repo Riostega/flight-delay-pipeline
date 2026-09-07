@@ -99,7 +99,11 @@ for i, statement in enumerate(statements, start=1):
             for row in cur.fetchall():
                 print("   ", row)
     except Exception as e:
-        print(f"\nFailed on statement {i}:\n{redact(statement)}\n{e}")
+        # The exception text is redacted too. Snowflake does not echo the
+        # failing SQL in its error message today, but that is a property of the
+        # server's error format rather than a guarantee, and this statement can
+        # carry AWS credentials for CREATE STAGE.
+        print(f"\nFailed on statement {i}:\n{redact(statement)}\n{redact(str(e))}")
         failed = True
         break
 
