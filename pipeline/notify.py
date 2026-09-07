@@ -18,7 +18,9 @@ at the exact moment something is already broken:
 """
 
 import os
+import re
 import traceback
+import urllib.parse
 from pathlib import Path
 
 import requests
@@ -27,6 +29,42 @@ import requests
 SLACK_TIMEOUT = 10
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+
+
+def redacted_traceback(*secrets):
+    """The current traceback with credentials scrubbed out.
+
+    traceback.print_exc() is not safe to call after a failed HTTP request to a
+    secret URL. requests embeds the full URL in its exception message —
+    "Max retries exceeded with url: /services/T.../B.../token" — so printing the
+    traceback writes the webhook straight into the Airflow task log, which is
+    exactly what this module promises never to do.
+
+    Scrubs the known secret values, then falls back to pattern-matching the
+    provider URL shapes so a credential this function was not handed still does
+    not survive. The traceback is worth keeping: without it a broken alerter is
+    invisible, and the frames are the diagnostic value.
+    """
+    text = traceback.format_exc()
+
+    for secret in secrets:
+        if not secret:
+            continue
+        text = text.replace(secret, "<redacted>")
+        # requests does not report the full URL. It reports the host and the
+        # path in separate parts of one message — "host=\'hooks.slack.com\'"
+        # then "with url: /services/T.../B.../token" — so replacing the whole
+        # URL matches nothing and the credential survives. Scrub the path too.
+        path = urllib.parse.urlsplit(secret).path
+        if len(path) > 1:
+            text = text.replace(path, "/<redacted>")
+
+    # Belt and braces: scrub the provider-shaped paths even when the caller did
+    # not hand us the value, so a future secret is not leaked by omission.
+    text = re.sub(r"/services/[A-Za-z0-9_\-/]+", "/services/<redacted>", text)
+    text = re.sub(r"/ping/[A-Za-z0-9_\-]+", "/ping/<redacted>", text)
+    text = re.sub(r"hc-ping\.com/\S+", "hc-ping.com/<redacted>", text)
+    return text
 
 
 def _env_value(name):
@@ -108,4 +146,4 @@ def slack_alert(context):
         # Rule 1. Swallow everything, but leave a trace in the task log so a
         # broken alerter is discoverable rather than merely quiet.
         print("notify: alerting failed, original task failure stands")
-        traceback.print_exc()
+        print(redacted_traceback(webhook))

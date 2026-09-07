@@ -225,14 +225,27 @@ if __name__ == "__main__":
 
     attempted = 0
     collected = 0
+    # Tracked per source, not just in total. Summing them and testing the sum
+    # against zero masks a whole-source failure in "all" mode: five successful
+    # weather pulls and zero flights gives collected == 5, the guard below stays
+    # quiet, and the run reports success having collected no flights at all.
+    failed_sources = []
+
     if mode in ("flights", "all"):
         if not check_flight_budget(airports):
             sys.exit("FAILED: monthly AviationStack budget reached — no requests spent")
         attempted += len(airports)
-        collected += run_flights(airports)
+        got = run_flights(airports)
+        collected += got
+        if got == 0:
+            failed_sources.append("flights")
+
     if mode in ("weather", "all"):
         attempted += len(airports)
-        collected += run_weather(airports)
+        got = run_weather(airports)
+        collected += got
+        if got == 0:
+            failed_sources.append("weather")
 
     # Exit non-zero when nothing at all was collected, so Airflow fails the task
     # and retries rather than reporting a green run. Without this, an exhausted
@@ -243,5 +256,8 @@ if __name__ == "__main__":
     # A partial failure is logged but tolerated: one airport failing is not a
     # reason to discard the four that succeeded, and the next run will catch up.
     print(f"collected {collected}/{attempted}")
-    if collected == 0:
-        sys.exit("FAILED: no data collected from any airport — check API quota and credentials")
+    if failed_sources:
+        sys.exit(
+            f"FAILED: no data collected for {', '.join(failed_sources)} "
+            "— check API quota and credentials"
+        )

@@ -28,7 +28,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from pipeline.notify import _env_value, _webhook_url, SLACK_TIMEOUT  # noqa: E402
+from pipeline.notify import (  # noqa: E402
+    _env_value,
+    _webhook_url,
+    redacted_traceback,
+    SLACK_TIMEOUT,
+)
 
 import requests  # noqa: E402
 
@@ -223,7 +228,7 @@ def post(text):
             print(f"watchdog: Slack returned {r.status_code}")
     except Exception:
         print("watchdog: could not reach Slack")
-        traceback.print_exc()
+        print(redacted_traceback(webhook, _env_value("HEARTBEAT_URL")))
 
 
 def main():
