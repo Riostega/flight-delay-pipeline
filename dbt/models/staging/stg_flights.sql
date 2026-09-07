@@ -34,7 +34,17 @@ select
 
     -- Populated when this record is a marketing label for a flight operated
     -- by another carrier.
-    f.value:flight.codeshared.flight_iata::string        as codeshare_flight_iata,
+    -- Upper-cased at the boundary. AviationStack returns the codeshare
+    -- designator lowercase ('dl1589') while every sibling designator —
+    -- flight_iata, flight_icao, airline_iata — arrives uppercase. IATA
+    -- designators are uppercase by definition, so this is a source defect, not
+    -- a modelling choice, and normalising it here fixes every consumer at once.
+    -- Left as-is it silently splits the grain: the fact table keys on
+    -- coalesce(codeshare_flight_iata, flight_iata, ...), so one physical flight
+    -- became 'dl1589_...' in some rows and 'DL1589_...' in others, and the
+    -- unique test on flight_event_key could not see it because those are
+    -- genuinely different strings.
+    upper(f.value:flight.codeshared.flight_iata::string) as codeshare_flight_iata,
     f.value:flight.codeshared.airline_name::string       as codeshare_airline_name,
 
     f.value:aircraft.icao24::string                      as aircraft_icao24,

@@ -14,3 +14,6 @@ INTERVIEW_NOTES.md
 # Local working notes
 CLAUDE.md
 .watchdog_state.json
+
+# Personal SQL drills — not part of the published project
+sql_practice.py
