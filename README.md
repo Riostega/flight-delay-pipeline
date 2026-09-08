@@ -356,6 +356,23 @@ ssh -i ~/.ssh/flight-pipeline-key.pem -N -L 8080:localhost:8080 ubuntu@<instance
 
 An internet-facing Airflow can trigger arbitrary DAGs, so it is never exposed directly.
 
+### Reaching the host from a different network
+
+The security group allows SSH from exactly one address, so moving networks — home to a
+cafe, a hotel, a conference — makes SSH time out. A timeout rather than a refusal is the
+tell: the packets are dropped by the group and the host itself is fine.
+
+```bash
+python3 infra/allow_my_ip.py      # point the rule at your current address
+```
+
+It also revokes the previous address, because one you have left still holds SSH to the
+instance for whoever the network assigns it to next.
+
+This is rarely needed. The pipeline runs unattended, reports failures to Slack and to an
+external heartbeat, and its freshness can be confirmed straight from Snowflake without
+touching the host at all.
+
 ## Monitoring
 
 Two mechanisms, because they catch different failures.
