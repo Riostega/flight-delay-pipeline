@@ -1,5 +1,7 @@
 # Fast checks that need no credentials, so they keep working even if the
-# Snowflake trial lapses. Catches broken refs, Jinja and SQL syntax errors,
+# Snowflake trial lapses. Catches broken refs and Jinja errors (dbt parse
+# renders Jinja but never sends SQL to a warehouse, so malformed SQL inside a
+# model is caught by dbt-build.yml, not here),
 # malformed schema.yml, and Python syntax problems.
 name: CI
 

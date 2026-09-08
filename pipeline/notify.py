@@ -127,7 +127,14 @@ def slack_alert(context):
         # The exception can be long (a full dbt failure summary). Slack will
         # accept it, but a phone notification shows only the first line, so the
         # useful detail goes first and the rest is truncated deliberately.
-        reason = str(exception).strip().splitlines()[0][:300] if exception else "no exception recorded"
+        # splitlines() on an empty or whitespace-only string returns [], so
+        # indexing [0] raised IndexError for `raise SomeError()` with no message.
+        # That exception was then swallowed by the outer handler and the alert
+        # was dropped entirely — a task failed and nothing reached Slack.
+        _lines = str(exception).strip().splitlines() if exception else []
+        reason = _lines[0][:300] if _lines else (
+            type(exception).__name__ if exception else "no exception recorded"
+        )
 
         text = (
             f":rotating_light: *{dag_id}* — task `{task_id}` failed\n"

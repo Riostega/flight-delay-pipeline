@@ -378,7 +378,7 @@ with tab_pipeline:
     c3.metric("Staged rows", f"{int(f.STAGED_ROWS):,}")
     c4.metric("Physical flights", f"{int(f.PHYSICAL_FLIGHTS):,}",
               delta=f"-{int(f.STAGED_ROWS) - int(f.PHYSICAL_FLIGHTS):,} collapsed",
-              delta_color="off", help="Codeshare labels and re-pull duplicates removed")
+              delta_color="off", help="Rows in staging that are not distinct physical flights in scope: codeshare labels, re-pull duplicates, arrivals at out-of-scope airports, and records with no flight identifier")
     # Collection failures are otherwise invisible: Airflow marks the run red in
     # a UI nobody watches continuously. Surfacing staleness here means the
     # symptom shows up where the data is actually looked at.

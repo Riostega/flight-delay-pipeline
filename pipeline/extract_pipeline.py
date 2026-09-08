@@ -136,11 +136,19 @@ def upload_to_s3(data, prefix, iata):
     # files could share an HHMMSS while being hours apart.
     now = datetime.now(timezone.utc)
 
-    # Airport goes in the key for legibility only. The raw JSON is landed
-    # exactly as received — the airport is recoverable from the payload itself
-    # (arrival.iata for flights, coord for weather), so nothing depends on
-    # parsing this filename.
-    key = f"{prefix}/{now.strftime('%Y-%m-%d')}/{iata}_{now.strftime('%H%M%S')}.json"
+    # The airport in this key is LOad-BEARING for weather. OpenWeatherMap's
+    # response carries coordinates but no airport code, so stg_weather derives
+    # iata_code by regex over source_file. Changing this key shape breaks that
+    # join. (It already did once: pre-IATA keys of the form
+    # raw/weather/<date>/HHMMSS.json cannot be matched, and those rows are still
+    # in the warehouse with a null iata_code.) Flights genuinely do not depend
+    # on it — arrival.iata is in the payload.
+    # Microseconds, not just seconds. A whole 5-airport run finishes inside a
+    # second or two, so a manual run overlapping the scheduled one produced the
+    # same key for the same airport and put_object silently overwrote the
+    # earlier file — losing raw data from the zone that is meant to be the
+    # immutable source of truth.
+    key = f"{prefix}/{now.strftime('%Y-%m-%d')}/{iata}_{now.strftime('%H%M%S_%f')}.json"
 
     s3.put_object(
         Bucket=os.getenv("S3_BUCKET_NAME"),
@@ -188,10 +196,22 @@ def run_flights(airports):
     collected = 0
     for airport in airports:
         iata = airport["iata_code"]
-        data = fetch_flights(iata)
-        if data:
-            upload_to_s3(data, "raw/flights", iata)
-            collected += 1
+        # Per-airport boundary. requests can raise (read timeout, DNS blip,
+        # connection reset) and a payload can be shaped unexpectedly; neither is
+        # caught by the status-code and body checks in fetch_*. Without this an
+        # error on airport 2 of 5 aborted the run and the remaining three were
+        # never attempted — and with retries=0 on the flights DAG, that gap was
+        # not recovered until the next scheduled run 48 hours later.
+        #
+        # One airport failing is not a reason to discard the others. A whole
+        # source failing is still caught by the per-source guard in main().
+        try:
+            data = fetch_flights(iata)
+            if data:
+                upload_to_s3(data, "raw/flights", iata)
+                collected += 1
+        except Exception as exc:
+            print(f"  flights {iata}: unhandled error, skipping — {type(exc).__name__}: {exc}")
     return collected
 
 
@@ -205,10 +225,13 @@ def run_weather(airports):
     collected = 0
     for airport in airports:
         iata = airport["iata_code"]
-        data = fetch_weather(airport["latitude"], airport["longitude"], iata)
-        if data:
-            upload_to_s3(data, "raw/weather", iata)
-            collected += 1
+        try:
+            data = fetch_weather(airport["latitude"], airport["longitude"], iata)
+            if data:
+                upload_to_s3(data, "raw/weather", iata)
+                collected += 1
+        except Exception as exc:
+            print(f"  weather {iata}: unhandled error, skipping — {type(exc).__name__}: {exc}")
     return collected
 
 

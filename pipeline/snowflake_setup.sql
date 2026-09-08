@@ -40,6 +40,12 @@ CREATE DATABASE IF NOT EXISTS <SNOWFLAKE_DATABASE>;
 
 USE DATABASE <SNOWFLAKE_DATABASE>;
 
+-- Created, not assumed. Only PUBLIC exists automatically in a new database, so
+-- with SNOWFLAKE_SCHEMA set to anything else this script failed here — on the
+-- documented trial-rebuild path, which is exactly when it is needed most and
+-- .env.example actively invites a different value.
+CREATE SCHEMA IF NOT EXISTS <SNOWFLAKE_SCHEMA>;
+
 USE SCHEMA <SNOWFLAKE_SCHEMA>;
 
 -- ============================================

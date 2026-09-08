@@ -231,7 +231,7 @@ uncollapsed, that aircraft's delay would have counted against 9 separate carrier
 
 ## Testing and CI
 
-32 dbt tests run against the modelled layer, and two GitHub Actions workflows enforce them on every
+36 dbt tests run against the modelled layer, and two GitHub Actions workflows enforce them on every
 push and pull request.
 
 **The load-bearing test is `unique` on `flight_event_key`.** It is the executable proof that the
@@ -242,7 +242,7 @@ Staging carries tests too, which is what makes `dbt build` protective — a stag
 its tests never becomes the input to the fact table. Testing only the mart would let a bad source
 rebuild it before anything objected.
 
-Six singular tests guard invariants a column test cannot express: that no flight arrives before it
+Ten singular tests guard invariants a column test cannot express: that no flight arrives before it
 departs (the tripwire for timezone handling), that delay minutes stay within a plausible band, that
 the weather freshness flag always agrees with the columns it governs, and that records dropped for
 carrying no flight identifier stay rare — so an exclusion the model makes deliberately cannot grow
@@ -252,7 +252,7 @@ The two workflows fail for different reasons, deliberately:
 
 | Workflow | Needs credentials | Runs |
 |---|---|---|
-| `ci.yml` | No | Python and DAG compilation, plus `dbt parse` against a placeholder profile — validates refs, Jinja, SQL syntax and schema files without connecting to anything |
+| `ci.yml` | No | Python and DAG compilation, plus `dbt parse` against a placeholder profile — validates refs, Jinja and schema files without connecting to anything. It renders Jinja but never sends SQL to a warehouse, so malformed SQL inside a model is caught by `dbt-build.yml`, not here |
 | `dbt-build.yml` | Yes | The real `dbt build` and a headless render of the dashboard, against Snowflake |
 
 Keeping the credential-free checks separate means they keep passing regardless of the state of the
@@ -270,10 +270,10 @@ being analysed, and drops it afterwards in a step that always runs.
 | Extract | Complete |
 | Land (S3) | Complete |
 | Load (Snowflake) | Complete |
-| Transform (dbt) | Complete — staging models, airport dimension, fact table with weather join, 32 passing tests |
+| Transform (dbt) | Complete — staging models, airport dimension, fact table with weather join, 36 passing tests |
 | Orchestrate (Airflow) | Complete — two DAGs on decoupled schedules, running under `systemd` on EC2 |
 | Infrastructure | Complete — scripted provisioning, IAM role, versioned raw zone |
-| Testing and CI | Complete — 32 dbt tests, two workflows on every push |
+| Testing and CI | Complete — 36 dbt tests, two workflows on every push |
 | Analysis | Pending data accumulation |
 
 ## Setup

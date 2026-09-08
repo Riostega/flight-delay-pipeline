@@ -158,8 +158,15 @@ def check_freshness():
             password=env("SNOWFLAKE_PASSWORD"), warehouse=env("SNOWFLAKE_WAREHOUSE"),
             database=env("SNOWFLAKE_DATABASE"), schema=env("SNOWFLAKE_SCHEMA"),
             login_timeout=60,
+            # The watchdog is the last line of defence; it must not be the thing
+            # that hangs. login_timeout covers authentication only, so a query
+            # against a warehouse that cannot resume would block main() before
+            # it ever reached the heartbeat, and the dead-man's switch would
+            # fire — correct, but far slower and less specific than failing here.
+            network_timeout=120,
         )
         cur = conn.cursor()
+        cur.execute("alter session set statement_timeout_in_seconds = 120")
 
         # sysdate(), not current_timestamp(). observed_at is TIMESTAMP_NTZ holding
         # UTC, while current_timestamp() returns TIMESTAMP_LTZ in the session's
@@ -229,17 +236,28 @@ def heartbeat(healthy):
 
 
 def post(text):
+    """Send one Slack message. Returns True only if Slack actually accepted it.
+
+    The caller stamps the re-alert throttle from this. Stamping on a merely
+    attempted post loses the FIRST alert of an outage whenever Slack is briefly
+    unreachable — and that is a correlated failure, because the conditions that
+    break the pipeline are the ones most likely to break its network too. The
+    problem would then stay silent for the full re-alert window.
+    """
     webhook = _webhook_url()
     if not webhook:
         print("watchdog: SLACK_WEBHOOK_URL unset — would have posted:", text)
-        return
+        return False
     try:
         r = requests.post(webhook, json={"text": text}, timeout=SLACK_TIMEOUT)
         if r.status_code != 200:
             print(f"watchdog: Slack returned {r.status_code}")
+            return False
+        return True
     except Exception:
         print("watchdog: could not reach Slack")
         print(redacted_traceback(webhook, _env_value("HEARTBEAT_URL")))
+        return False
 
 
 def main():
@@ -283,8 +301,11 @@ def main():
             except ValueError:
                 due = True
         if due:
-            post(f":warning: *pipeline watchdog* ({host})\n> {name}: {detail}")
-            state[name] = now.isoformat()
+            # Only stamp the throttle when Slack actually took the message,
+            # so a failed delivery is retried on the next tick instead of
+            # being suppressed for the whole re-alert window.
+            if post(f":warning: *pipeline watchdog* ({host})\n> {name}: {detail}"):
+                state[name] = now.isoformat()
 
     for name in list(state):
         # Keys prefixed with "_" are bookkeeping, not conditions. And a check
@@ -303,7 +324,13 @@ def main():
     # Ping last, so the heartbeat reflects the checks that just ran. A failing
     # ping tells the external service to alert immediately rather than waiting
     # for the grace period to lapse.
-    heartbeat(healthy=not problems)
+    # Outstanding problems in the state file count, not just the ones detected on
+    # THIS tick. Freshness is only checked every couple of hours, so on a skipped
+    # tick it is absent from `problems` even while still broken — pinging healthy
+    # there resolved the external incident and the dead-man's switch went green
+    # with the problem still live.
+    outstanding = {k for k in state if not k.startswith("_")}
+    heartbeat(healthy=not problems and not outstanding)
 
     status = "; ".join(f"{k}: {v}" for k, v in problems.items()) or "all checks passed"
     if not freshness_ran:

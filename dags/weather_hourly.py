@@ -39,7 +39,14 @@ with DAG(
         "on_failure_callback": slack_alert,
         # Weather calls are cheap against the quota, so retry more freely than
         # the flights DAG does.
-        "retries": 2,
+        # Without this a task that HANGS rather than fails blocks every later run
+    # forever: max_active_runs=1 means the stuck run holds the only slot, and
+    # nothing else bounds it. A hang is also invisible to the failure callback,
+    # which only fires on a task that actually finishes badly.
+    # Runs hourly, so anything still going after 15 minutes has hung rather than
+    # slowed, and would block the next run under max_active_runs=1.
+    "execution_timeout": timedelta(minutes=15),
+    "retries": 2,
         "retry_delay": timedelta(minutes=2),
     },
     tags=["weather"],

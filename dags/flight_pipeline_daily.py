@@ -42,6 +42,14 @@ default_args = {
     # the same rows the failed attempt would have. The next scheduled run
     # recovers the gap at no extra cost. Retrying here trades real quota for
     # duplicate data.
+    # Without this a task that HANGS rather than fails blocks every later run
+    # forever: max_active_runs=1 means the stuck run holds the only slot, and
+    # nothing else bounds it. A hang is also invisible to the failure callback,
+    # which only fires on a task that actually finishes badly.
+    # dbt build over a cold warehouse is the slow step; 45 minutes is far above
+    # any observed run (the longest was under 6) and far below the 48-hour gap to
+    # the next scheduled run.
+    "execution_timeout": timedelta(minutes=45),
     "retries": 0,
     "retry_delay": timedelta(minutes=5),
 }

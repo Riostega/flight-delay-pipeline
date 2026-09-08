@@ -83,6 +83,11 @@ conn = snowflake.connector.connect(
     account=env("SNOWFLAKE_ACCOUNT"),
     user=env("SNOWFLAKE_USER"),
     password=env("SNOWFLAKE_PASSWORD"),
+    # Bounded so a half-open connection or a warehouse that will not resume
+    # fails the task instead of hanging it. Without these the only backstop is
+    # the server-side statement timeout, which defaults to two days.
+    login_timeout=60,
+    network_timeout=300,
     warehouse=env("SNOWFLAKE_WAREHOUSE"),
     database=env("SNOWFLAKE_DATABASE"),
     schema=env("SNOWFLAKE_SCHEMA"),
