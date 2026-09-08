@@ -170,11 +170,33 @@ def ensure_security_group():
                 "IpRanges": [{"CidrIp": f"{ip}/32", "Description": "SSH from provisioning host"}],
             }],
         )
-        print(f"  allowed SSH from {ip}/32 only")
+        print(f"  allowed SSH from {ip}/32")
     except ClientError as e:
         if e.response["Error"]["Code"] != "InvalidPermission.Duplicate":
             raise
         print(f"  SSH rule for {ip}/32 already present")
+
+    # Revoke every other SSH rule. This used to only ever ADD, which meant the
+    # group accumulated one permanent /32 for every network provisioning was
+    # ever run from. On a dynamic residential address that is a real exposure:
+    # when the ISP rotates the IP, SSH breaks, the natural fix is to re-run this
+    # script — and the address you just stopped using keeps SSH to the host for
+    # whoever the ISP hands it to next. The group's own description says "SSH
+    # from one address", so make that true rather than aspirational.
+    current = ec2.describe_security_groups(GroupIds=[sg])["SecurityGroups"][0]
+    for perm in current["IpPermissions"]:
+        if perm.get("FromPort") != 22:
+            continue
+        stale = [r for r in perm.get("IpRanges", []) if r["CidrIp"] != f"{ip}/32"]
+        for rng in stale:
+            ec2.revoke_security_group_ingress(
+                GroupId=sg,
+                IpPermissions=[{
+                    "IpProtocol": "tcp", "FromPort": 22, "ToPort": 22,
+                    "IpRanges": [{"CidrIp": rng["CidrIp"]}],
+                }],
+            )
+            print(f"  revoked stale SSH rule {rng['CidrIp']}")
     return sg
 
 
