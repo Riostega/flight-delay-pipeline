@@ -219,12 +219,19 @@ with tab_overview:
 
 # ---------------------------------------------------------------- Airports
 with tab_airports:
-    st.subheader("Departure delay against arrival delay")
+    st.subheader("Time recovered in the air, by arrival airport")
     st.caption(
-        "Flights routinely recover time in the air, because airlines pad published "
-        "schedules. Measuring arrival alone hides problems at the origin."
+        "Both points are the same inbound flights, grouped by where they LANDED. "
+        "The departure figure is how late those flights left their own origins — it is "
+        "not a measure of this airport's own departure performance, because only 16% of "
+        "collected flights depart from one of the five scoped airports. The gap between "
+        "the points is time made up in the air, because airlines pad published schedules."
     )
 
+    # Grouped by arrival_airport on purpose: the two points must describe the SAME
+    # flights or the gap between them is not recovery. Grouping the departure point
+    # by departure_airport instead would compare two different populations, and the
+    # scoped-origin samples are far too small to stand on (MIA n=8).
     d = q("""
         SELECT arrival_airport AS airport,
                ROUND(AVG(departure_delay_minutes), 1) AS avg_dep,
@@ -240,13 +247,13 @@ with tab_airports:
             x=[r.AVG_DEP, r.AVG_ARR], y=[r.AIRPORT, r.AIRPORT], mode="lines",
             line=dict(color=GRID, width=2), showlegend=False, hoverinfo="skip"))
     fig.add_trace(go.Scatter(
-        x=d.AVG_DEP, y=d.AIRPORT, mode="markers", name="Departure",
+        x=d.AVG_DEP, y=d.AIRPORT, mode="markers", name="Departed late by",
         marker=dict(color=PAIR_STRONG, size=13, line=dict(color=SURFACE, width=2)),
-        hovertemplate="<b>%{y}</b><br>departure %{x} min<extra></extra>"))
+        hovertemplate="<b>%{y}</b><br>left origin %{x} min late<extra></extra>"))
     fig.add_trace(go.Scatter(
-        x=d.AVG_ARR, y=d.AIRPORT, mode="markers", name="Arrival",
+        x=d.AVG_ARR, y=d.AIRPORT, mode="markers", name="Arrived late by",
         marker=dict(color=PAIR_SOFT, size=13, line=dict(color=SURFACE, width=2)),
-        hovertemplate="<b>%{y}</b><br>arrival %{x} min<extra></extra>"))
+        hovertemplate="<b>%{y}</b><br>arrived %{x} min late<extra></extra>"))
     fig.add_vline(x=0, line_width=2, line_color=INK_MUTED, opacity=0.35)
     fig.update_yaxes(autorange="reversed")
     st.plotly_chart(base_layout(fig, 340, "Average delay, minutes (0 = on time)"), width='stretch')

@@ -128,7 +128,18 @@ def check_freshness():
     try:
         import snowflake.connector
     except ImportError:
-        return None  # Wrong venv; the other checks still ran.
+        # NOT None. None is this module's encoding for "checked, and fine", so
+        # returning it here reported a check that never ran as a passing one:
+        # main() stamped _last_freshness, set freshness_ran, saw no freshness
+        # problem, and posted a green "freshness: recovered" to Slack while
+        # deleting any outstanding problem from the state file. Every later tick
+        # then reported healthy forever, having never once reached Snowflake —
+        # silently disabling the single failure mode this watchdog exists for.
+        #
+        # The watchdog is deployed against a venv that has this dependency, so
+        # an ImportError here is a broken deployment, and a broken deployment of
+        # the monitor is worth an alert in its own right.
+        return "snowflake connector not importable — the watchdog cannot check freshness"
 
     def env(key):
         value = (os.getenv(key) or "").strip()

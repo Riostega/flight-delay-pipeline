@@ -86,11 +86,17 @@ scheduled and actual times clearly differ. Delay is therefore derived directly f
 
 ### Departure and arrival delay are tracked separately
 
-Across a representative pull, every airport showed positive average *departure* delay but
-negative average *arrival* delay — flights routinely recover 20-30 minutes in the air because
-airlines pad published schedules. Measuring only arrival delay (the US DOT convention) hides
-origin-side operational failures entirely, so both are retained along with a derived
-`minutes_recovered`.
+Every airport shows positive average *departure* delay but negative average *arrival* delay:
+flights routinely recover 20-40 minutes in the air because airlines pad published schedules.
+Both are retained along with a derived `minutes_recovered`, because a flight that leaves 30
+minutes late and lands on time is a different operational story from one that does neither.
+
+**What this does not measure.** Both figures are grouped by *arrival* airport, so the departure
+number is how late those inbound flights left **their own origins** — it is not the named
+airport's departure performance. Only 16% of collected flights depart from one of the five
+scoped airports, and the per-origin samples are far too small to stand on (MIA has 8). Grouping
+the two points differently would also break the comparison: recovery is only meaningful when
+both ends describe the same flights.
 
 ### The raw zone is the source of truth
 
@@ -180,19 +186,24 @@ shown because the *shape* is what the pipeline exists to detect, not because the
 large enough to conclude from — and they will not match the warehouse once collection has moved
 on. The dashboard reads live.
 
-**Reliability by airport** — 829 physical flights:
+**Reliability by airport** — 942 physical flights, grouped by arrival airport:
 
-| Airport | Flights | Avg dep delay | Avg arr delay | Recovered in air | % late arrival |
+| Airport | Flights | Inbound dep delay | Avg arr delay | Recovered in air | % late arrival |
 |---|---|---|---|---|---|
-| SFO | 148 | 28.9 | -3.2 | 32.2 | 18.2% |
-| EWR | 195 | 28.4 | -8.2 | 36.6 | 15.4% |
-| MIA | 169 | 22.3 | -9.8 | 32.1 | 10.1% |
-| ATL | 177 | 24.1 | -14.8 | 38.8 | 8.5% |
-| LAX | 140 | 21.3 | -14.0 | 35.3 | 3.6% |
+| SFO | 167 | 30.3 | -3.8 | 34.1 | 18.6% |
+| EWR | 200 | 28.2 | -10.0 | 38.1 | 14.0% |
+| MIA | 212 | 31.8 | -7.7 | 39.5 | 13.2% |
+| ATL | 185 | 25.8 | -15.6 | 41.4 | 8.1% |
+| LAX | 178 | 23.3 | -14.6 | 37.9 | 6.7% |
 
 Every airport shows a positive *departure* delay and a negative *arrival* delay: flights routinely
-make up half an hour in the air because airlines pad published schedules. Measuring arrivals alone,
-as the industry standard does, would hide origin-side problems entirely.
+make up half an hour in the air because airlines pad published schedules.
+
+The second column is deliberately named **inbound** departure delay. It is the lateness of flights
+arriving at that airport, measured at whatever origin they left — not the airport's own departure
+performance, which this sample cannot support (only 153 of 942 flights depart from a scoped
+airport). The late-arrival rate in the last column is the column to read for airport reliability:
+SFO 18.6% against LAX 6.7% is significant at p < 0.01 (two-proportion z = 3.32).
 
 **The question the project actually asks** — delays against the weather recorded at arrival
 (507 of 829 flights matched to an observation within 120 minutes):
@@ -231,7 +242,7 @@ Staging carries tests too, which is what makes `dbt build` protective — a stag
 its tests never becomes the input to the fact table. Testing only the mart would let a bad source
 rebuild it before anything objected.
 
-Four singular tests guard invariants a column test cannot express: that no flight arrives before it
+Six singular tests guard invariants a column test cannot express: that no flight arrives before it
 departs (the tripwire for timezone handling), that delay minutes stay within a plausible band, that
 the weather freshness flag always agrees with the columns it governs, and that records dropped for
 carrying no flight identifier stay rare — so an exclusion the model makes deliberately cannot grow
@@ -259,7 +270,7 @@ being analysed, and drops it afterwards in a step that always runs.
 | Extract | Complete |
 | Land (S3) | Complete |
 | Load (Snowflake) | Complete |
-| Transform (dbt) | Complete — staging models, airport dimension, fact table with weather join, 34 passing tests |
+| Transform (dbt) | Complete — staging models, airport dimension, fact table with weather join, 32 passing tests |
 | Orchestrate (Airflow) | Complete — two DAGs on decoupled schedules, running under `systemd` on EC2 |
 | Infrastructure | Complete — scripted provisioning, IAM role, versioned raw zone |
 | Testing and CI | Complete — 32 dbt tests, two workflows on every push |

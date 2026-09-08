@@ -146,9 +146,13 @@ flight_events as (
         departure_delay_minutes - arrival_delay_minutes          as minutes_recovered,
 
         -- 15 minutes is the US DOT / BTS on-time threshold, which keeps these
-        -- figures comparable to published industry statistics.
-        coalesce(departure_delay_minutes > 15, false)            as is_delayed_departure,
-        coalesce(arrival_delay_minutes > 15, false)              as is_delayed_arrival
+        -- figures comparable to published industry statistics. The comparison is
+        -- >= rather than >: BTS counts a flight as delayed when it is 15 minutes
+        -- OR MORE behind schedule, so a flight exactly 15 minutes late is late.
+        -- With > it was reported on time, which is the one value where this
+        -- table would have disagreed with the standard it claims to match.
+        coalesce(departure_delay_minutes >= 15, false)           as is_delayed_departure,
+        coalesce(arrival_delay_minutes >= 15, false)             as is_delayed_arrival
 
     from physical_flights
 
