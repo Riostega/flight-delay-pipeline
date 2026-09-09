@@ -181,20 +181,46 @@ def check_freshness():
         # newest source file landed. That measures whether the pipeline is
         # delivering, which is the question here — the flights' own timestamps
         # would only say how recent the *flights* were.
+        #
+        # Anchored on the IATA code, NOT on ".json". The time used to be the last
+        # six digits before the extension, so '_([0-9]{6})\.json' worked — until
+        # microseconds were appended to the key to stop two runs in the same
+        # second overwriting each other. After that the same pattern matched the
+        # MICROSECONDS, and to_timestamp_ntz raised on '2026-09-09 158798',
+        # taking the whole freshness check down. Both key shapes put the time
+        # immediately after the airport code, so that is the stable anchor.
+        #
+        # try_to_timestamp_ntz, not to_timestamp_ntz: a filename this code does
+        # not control must not be able to raise. Anything unparseable — the
+        # pre-IATA keys still sitting in the raw zone, or the next key-format
+        # change — becomes NULL and is skipped by max() instead of failing the
+        # check that exists to notice failures.
         cur.execute("""
-            select datediff('hour', max(to_timestamp_ntz(
+            select datediff('hour', max(try_to_timestamp_ntz(
                        regexp_substr(source_file, '([0-9]{4}-[0-9]{2}-[0-9]{2})', 1, 1, 'e', 1)
                        || ' ' ||
-                       regexp_substr(source_file, '_([0-9]{6})\\.json', 1, 1, 'e', 1),
+                       regexp_substr(source_file, '[A-Z]{3}_([0-9]{6})', 1, 1, 'e', 1),
                        'YYYY-MM-DD HH24MISS')), sysdate())
             from stg_flights
         """)
         flights_age = cur.fetchone()[0]
 
+        # A NULL age is its own failure and gets its own wording. It means no row
+        # produced a usable timestamp at all — an empty table, or a source_file
+        # shape the parser above no longer recognises. Reporting that as
+        # "None hours stale" reads like a formatting bug and buries the cause.
         problems = []
-        if weather_age is None or weather_age > WEATHER_STALE_HOURS:
+        if weather_age is None:
+            problems.append("weather age is unknown — stg_weather has no usable observed_at")
+        elif weather_age > WEATHER_STALE_HOURS:
             problems.append(f"weather is {weather_age}h stale (expected <{WEATHER_STALE_HOURS}h)")
-        if flights_age is None or flights_age > FLIGHTS_STALE_HOURS:
+
+        if flights_age is None:
+            problems.append(
+                "flights age is unknown — no source_file parsed to a timestamp, "
+                "which usually means the S3 key format changed"
+            )
+        elif flights_age > FLIGHTS_STALE_HOURS:
             problems.append(f"flights are {flights_age}h stale (expected <{FLIGHTS_STALE_HOURS}h)")
         return "; ".join(problems) if problems else None
     except Exception as exc:
