@@ -328,12 +328,29 @@ does not survive a laptop going to sleep.
 ```bash
 python3 infra/provision_ec2.py           # IAM role, key pair, security group (all free)
 python3 infra/provision_ec2.py --launch  # ...and the instance
+
+# then, on the host, from a clone of this repository with .env in place:
+bash infra/bootstrap.sh                  # venvs, dbt profile, systemd units, start
+
 python3 infra/terminate_ec2.py --yes     # tear it down
 ```
 
 Provisioning is split so the free resources are created first and a mistake cannot leave
 something billing. On the host, Airflow runs under `systemd` with `Restart=always`, so it
 survives both crashes and reboots.
+
+`bootstrap.sh` exists because provisioning only ever produced a bare Ubuntu box. Everything
+that made it a *pipeline* host — two virtualenvs, the dbt profile, three `systemd` units — was
+configured by hand and lived only on the running machine. The data was recoverable from S3 and
+the warehouse rebuildable with dbt, but the host was not reproducible from this repository, so
+the recovery story covered only half of what recovery actually needs.
+
+It is idempotent, so it doubles as a repair tool when one piece of a host has drifted, and it
+rewrites the unit files for whichever user and path it finds rather than assuming
+`/home/ubuntu`. It also **generates `~/.dbt/profiles.yml` from `.env`**. dbt cannot read `.env`,
+so those credentials otherwise exist in two places that drift apart silently — the symptom is
+`test_snowflake.py` passing while `dbt debug` fails, which reads like a Snowflake problem rather
+than an editing mistake.
 
 The host is a git checkout of this repository, so deploying a change is:
 

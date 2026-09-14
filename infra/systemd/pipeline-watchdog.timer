@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the flight pipeline watchdog every 30 minutes
+
+[Timer]
+# Five minutes after boot catches a host that came back up with a broken
+# service, rather than waiting for the first half-hour interval to elapse.
+OnBootSec=5min
+OnUnitActiveSec=30min
+# Prevents every restart from bunching runs onto the same instant.
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

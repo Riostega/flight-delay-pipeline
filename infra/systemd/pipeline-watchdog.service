@@ -1,0 +1,13 @@
+[Unit]
+Description=Flight pipeline watchdog (liveness + freshness)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/Flight_Delay_Pipeline
+Environment="AIRFLOW_HOME=/home/ubuntu/airflow"
+Environment="WATCHDOG_AIRFLOW_PYTHON=/home/ubuntu/airflow-venv/bin/python"
+ExecStart=/home/ubuntu/pipeline-venv/bin/python /home/ubuntu/Flight_Delay_Pipeline/pipeline/watchdog.py
