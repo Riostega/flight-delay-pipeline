@@ -13,6 +13,16 @@
 -- This test is no longer the tripwire for timezone faults. That job belongs to
 -- assert_arrival_after_departure, which catches the actual failure mode
 -- directly rather than inferring it from an implausible magnitude.
+-- Thresholded rather than all-or-nothing. The source occasionally publishes a
+-- scheduled time that belongs to a different leg or a different day, which is a
+-- defect in one record rather than a fault in the pipeline — and because the raw
+-- zone is immutable, that record never leaves the data. Failing the build
+-- forever over two bad rows would mean the build stops telling us anything.
+--
+-- A handful warns; a systemic break still fails. If this fires as an error, the
+-- cause is a parsing or timezone fault, not the source having a bad day.
+{{ config(warn_if = '>0', error_if = '>5') }}
+
 select
     flight_event_key,
     departure_airport,
