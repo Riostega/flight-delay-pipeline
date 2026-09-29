@@ -140,6 +140,36 @@ flight_events as (
         arrival_actual_utc,
         arrival_delay_minutes,
 
+        source_departure_delay_minutes,
+        source_arrival_delay_minutes,
+
+        -- Some records pair an actual operation with a schedule that belongs to
+        -- a different leg or a different day, so the times are individually
+        -- plausible and jointly impossible. Two rules, each with its own reason:
+        --
+        --   a departure more than an hour early is not an operational event.
+        --   Aircraft do not leave before their slot, so a large negative
+        --   departure delay means the scheduled time is not this flight's.
+        --   PXG210 on 2026-09-25 "departed" five and a half hours early — it
+        --   flew the night before, against the next night's schedule.
+        --
+        --   arrivals genuinely can be hours early on a tailwind, so those are
+        --   judged on elapsed time instead: if the gate-to-gate duration the
+        --   schedule implies differs from the duration actually flown by more
+        --   than four hours, the schedule is describing a different journey.
+        --   UA7 was scheduled thirteen hours for a flight it made in three.
+        --
+        -- Four hours clears the widest genuine case in the sample: a freighter
+        -- scheduled 12h17m that flew 9h25m with the jet stream behind it.
+        coalesce(departure_delay_minutes < -60, false)
+        or coalesce(
+            abs(
+                datediff('minute', departure_actual_utc, arrival_actual_utc)
+                - datediff('minute', departure_scheduled_utc, arrival_scheduled_utc)
+            ) > 240,
+            false
+        )                                                        as has_suspect_times,
+
         -- Flights routinely recover time in the air because airlines pad
         -- published schedules; measuring arrival delay alone hides origin-side
         -- operational failures.
@@ -236,6 +266,12 @@ select
     minutes_recovered,
     is_delayed_departure,
     is_delayed_arrival,
+
+    -- The source's own delay figures, kept alongside the computed ones so the
+    -- two readings can be compared rather than one silently trusted.
+    source_departure_delay_minutes,
+    source_arrival_delay_minutes,
+    has_suspect_times,
 
     -- Weather conditions at the arrival airport around landing.
     --

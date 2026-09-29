@@ -79,6 +79,15 @@ select
     datediff('minute', f.value:arrival.scheduled::string::timestamp_ntz,
                        f.value:arrival.actual::string::timestamp_ntz)    as arrival_delay_minutes,
 
+    -- The source publishes its own delay figures. They are inconsistently
+    -- populated, which is why the delays above are computed rather than read --
+    -- but where they exist they are a second, independent reading of the same
+    -- quantity, and the two disagreeing means one of the inputs is wrong.
+    -- UA7 on 2026-09-16 reported a delay of 0 alongside a scheduled arrival
+    -- that implied the flight landed ten hours early.
+    try_to_number(f.value:departure.delay::string)       as source_departure_delay_minutes,
+    try_to_number(f.value:arrival.delay::string)         as source_arrival_delay_minutes,
+
     -- Lineage back to the exact S3 object this row came from.
     r.source_file
 

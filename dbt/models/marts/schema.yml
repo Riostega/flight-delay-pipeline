@@ -101,6 +101,26 @@ models:
           keeps these figures comparable to published industry statistics.
         tests: [not_null]
 
+      - name: source_departure_delay_minutes
+        description: >
+          The delay the source reports for departure. Inconsistently populated,
+          so it is not the measurement — but where present it is a second,
+          independent reading, and disagreement with the computed value means
+          one of the two inputs is wrong.
+
+      - name: source_arrival_delay_minutes
+        description: The same, for arrival.
+
+      - name: has_suspect_times
+        description: >
+          True when the schedule on a record cannot belong to the operation it
+          is paired with: a departure more than an hour early, or an implied
+          gate-to-gate duration more than four hours from the one actually
+          flown. These are source defects rather than pipeline faults, so they
+          are flagged rather than dropped, and assert_suspect_time_rate fails if
+          they stop being rare.
+        tests: [not_null]
+
       - name: weather_observed_at
         description: >
           Timestamp of the matched weather observation, in UTC. This is the

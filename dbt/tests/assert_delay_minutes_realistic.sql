@@ -13,16 +13,11 @@
 -- This test is no longer the tripwire for timezone faults. That job belongs to
 -- assert_arrival_after_departure, which catches the actual failure mode
 -- directly rather than inferring it from an implausible magnitude.
--- Thresholded rather than all-or-nothing. The source occasionally publishes a
--- scheduled time that belongs to a different leg or a different day, which is a
--- defect in one record rather than a fault in the pipeline — and because the raw
--- zone is immutable, that record never leaves the data. Failing the build
--- forever over two bad rows would mean the build stops telling us anything.
---
--- A handful warns; a systemic break still fails. If this fires as an error, the
--- cause is a parsing or timezone fault, not the source having a bad day.
-{{ config(warn_if = '>0', error_if = '>5') }}
-
+-- Rows the model has already identified as carrying a schedule from a different
+-- leg or day are excluded, because they are accounted for rather than unknown:
+-- has_suspect_times names them, and assert_suspect_time_rate watches how many
+-- there are. Loosening this bound instead would have hidden the next real
+-- parsing fault behind an allowance made for two bad source records.
 select
     flight_event_key,
     departure_airport,
@@ -30,5 +25,6 @@ select
     departure_delay_minutes,
     arrival_delay_minutes
 from {{ ref('fct_flight_events') }}
-where departure_delay_minutes not between -240 and 1440
-   or arrival_delay_minutes   not between -240 and 1440
+where not has_suspect_times
+  and (departure_delay_minutes not between -240 and 1440
+    or arrival_delay_minutes   not between -240 and 1440)
