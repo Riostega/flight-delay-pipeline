@@ -84,6 +84,26 @@ scheduled and actual times clearly differ. Delay is therefore derived directly f
 (`datediff('minute', scheduled, actual)`), which is both more reliable and explicit about what
 "delayed" means.
 
+### Some schedules belong to a different flight
+
+A record can carry times that are individually plausible and jointly impossible, because the
+source occasionally pairs an actual operation with a schedule from another leg or another day.
+UA7 on 2026-09-16 was scheduled thirteen hours for a flight it made in three; PXG210 on
+2026-09-25 flew the night before, against the next night's slot. In both the source's own
+`delay` field read 0, which is how you can tell the schedule is the broken half rather than
+the arrival.
+
+Those rows are named rather than dropped or tolerated. `has_suspect_times` marks a departure
+three hours early — freight leaves an hour early routinely, so the threshold has to clear the
+honest cases — or a gate-to-gate duration more than four hours from the one actually flown,
+which catches the mirror image: a flight that departs hours late and still arrives on time.
+`assert_suspect_time_rate` fails if they stop being rare, since a handful is the source having
+a bad day and one percent is a parsing fault. The source's delay figures are kept alongside the
+computed ones, because two independent readings of the same quantity are worth comparing.
+
+The alternative was widening the plausible-delay bounds until the bad rows fit, which would
+have hidden the next real timezone fault behind an allowance made for two bad records.
+
 ### Departure and arrival delay are tracked separately
 
 Every airport shows positive average *departure* delay but negative average *arrival* delay:
@@ -231,7 +251,7 @@ uncollapsed, that aircraft's delay would have counted against 9 separate carrier
 
 ## Testing and CI
 
-36 dbt tests run against the modelled layer, and two GitHub Actions workflows enforce them on every
+38 dbt tests run against the modelled layer, and two GitHub Actions workflows enforce them on every
 push and pull request.
 
 **The load-bearing test is `unique` on `flight_event_key`.** It is the executable proof that the
@@ -242,7 +262,7 @@ Staging carries tests too, which is what makes `dbt build` protective — a stag
 its tests never becomes the input to the fact table. Testing only the mart would let a bad source
 rebuild it before anything objected.
 
-Ten singular tests guard invariants a column test cannot express: that no flight arrives before it
+Eleven singular tests guard invariants a column test cannot express: that no flight arrives before it
 departs (the tripwire for timezone handling), that delay minutes stay within a plausible band, that
 the weather freshness flag always agrees with the columns it governs, and that records dropped for
 carrying no flight identifier stay rare — so an exclusion the model makes deliberately cannot grow
@@ -270,10 +290,10 @@ being analysed, and drops it afterwards in a step that always runs.
 | Extract | Complete |
 | Land (S3) | Complete |
 | Load (Snowflake) | Complete |
-| Transform (dbt) | Complete — staging models, airport dimension, fact table with weather join, 36 passing tests |
+| Transform (dbt) | Complete — staging models, airport dimension, fact table with weather join, 38 passing tests |
 | Orchestrate (Airflow) | Complete — two DAGs on decoupled schedules, running under `systemd` on EC2 |
 | Infrastructure | Complete — scripted provisioning, IAM role, versioned raw zone |
-| Testing and CI | Complete — 36 dbt tests, two workflows on every push |
+| Testing and CI | Complete — 38 dbt tests, two workflows on every push |
 | Analysis | Pending data accumulation |
 
 ## Setup
