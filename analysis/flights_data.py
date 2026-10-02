@@ -4,6 +4,7 @@
 
     flights = load_flights()   # every row of fct_flight_events
     clean = prepare(flights)   # suspect rows removed, analysis columns added
+    weather = load_weather()   # every hourly weather reading (stg_weather)
 """
 
 import os
@@ -16,7 +17,9 @@ from dotenv import find_dotenv, load_dotenv
 # Searches upward from the current folder, so it finds the repository's .env from analysis/.
 load_dotenv(find_dotenv(usecwd=True))
 
-BACKUP_CSV = Path.home() / "flight-pipeline-backup" / "warehouse_export" / "fct_flight_events_2026-10-02.csv"
+BACKUP_DIR = Path.home() / "flight-pipeline-backup" / "warehouse_export"
+BACKUP_CSV = BACKUP_DIR / "fct_flight_events_2026-10-02.csv"
+WEATHER_BACKUP_CSV = BACKUP_DIR / "stg_weather_2026-10-02.csv"
 
 # Operators matched by name. Simple keyword lists built by reading the carrier names in the
 # data: they cover what's there today, but a new operator would need adding.
@@ -32,43 +35,75 @@ NON_SCHEDULED_WORDS = ("Flexjet|Netjets|Wheels Up|Vistajet|Selectjet|Reach Air M
 TIME_OF_DAY_LABELS = ["night (0-5)", "morning (6-11)", "afternoon (12-17)", "evening (18-23)"]
 
 
-def read_backup_csv(reason):
-    """Fall back to the CSV export, and say so loudly so stale data is never mistaken for live."""
+def read_backup_csv(reason, path=BACKUP_CSV):
+    """Fall back to a CSV export, and say so loudly so stale data is never mistaken for live."""
     print(f"*** {reason}")
-    print(f"*** Using the CSV backup instead: {BACKUP_CSV.name}")
-    return pd.read_csv(BACKUP_CSV)
+    print(f"*** Using the CSV backup instead: {path.name}")
+    return pd.read_csv(path)
 
 
-def load_flights():
-    """Read fct_flight_events from Snowflake, or from the CSV backup if Snowflake can't be reached."""
+def read_table(table, backup_csv):
+    """Read a whole Snowflake table, or its CSV backup if Snowflake can't be reached."""
     # Only a missing or failed connection falls back to the CSV. A broken query should
     # fail loudly rather than quietly analysing old data.
     if not os.getenv("SNOWFLAKE_ACCOUNT"):
-        flights = read_backup_csv("No Snowflake credentials found (is there a .env file?).")
-    else:
-        try:
-            conn = snowflake.connector.connect(
-                account=os.getenv("SNOWFLAKE_ACCOUNT"),
-                user=os.getenv("SNOWFLAKE_USER"),
-                password=os.getenv("SNOWFLAKE_PASSWORD"),
-                warehouse=os.getenv("SNOWFLAKE_WAREHOUSE"),
-                database=os.getenv("SNOWFLAKE_DATABASE"),
-                schema=os.getenv("SNOWFLAKE_SCHEMA"),
-                login_timeout=30,
-            )
-        except snowflake.connector.errors.Error as error:
-            flights = read_backup_csv(f"Snowflake unavailable ({error}).")
-        else:
-            with conn:
-                flights = conn.cursor().execute("select * from fct_flight_events").fetch_pandas_all()
-            print("Loaded live data from Snowflake")
+        return read_backup_csv("No Snowflake credentials found (is there a .env file?).", backup_csv)
+    try:
+        conn = snowflake.connector.connect(
+            account=os.getenv("SNOWFLAKE_ACCOUNT"),
+            user=os.getenv("SNOWFLAKE_USER"),
+            password=os.getenv("SNOWFLAKE_PASSWORD"),
+            warehouse=os.getenv("SNOWFLAKE_WAREHOUSE"),
+            database=os.getenv("SNOWFLAKE_DATABASE"),
+            schema=os.getenv("SNOWFLAKE_SCHEMA"),
+            login_timeout=30,
+        )
+    except snowflake.connector.errors.Error as error:
+        return read_backup_csv(f"Snowflake unavailable ({error}).", backup_csv)
+    with conn:
+        rows = conn.cursor().execute(f"select * from {table}").fetch_pandas_all()
+    print(f"Loaded {table} live from Snowflake")
+    return rows
 
+
+def load_flights():
+    """Every row of fct_flight_events, with column names lowercased and timestamps parsed."""
+    flights = read_table("fct_flight_events", BACKUP_CSV)
     flights.columns = flights.columns.str.lower()
     for column in ["flight_date", "arrival_scheduled_local", "arrival_scheduled_utc",
                    "arrival_actual_utc", "departure_scheduled_utc"]:
-        flights[column] = pd.to_datetime(flights[column])
+        flights[column] = pd.to_datetime(flights[column]).astype("datetime64[ns]")
     print(f"{len(flights):,} flights")
     return flights
+
+
+def load_weather():
+    """Every hourly weather reading from stg_weather, timestamps in UTC."""
+    weather = read_table("stg_weather", WEATHER_BACKUP_CSV)
+    weather.columns = weather.columns.str.lower()
+    weather["observed_at"] = pd.to_datetime(weather["observed_at"]).astype("datetime64[ns]")
+    return weather.dropna(subset=["iata_code"])
+
+
+def wind_at_scheduled_arrival(flights, weather, max_lag_minutes=120):
+    """Wind speed from the latest reading at or before each flight's SCHEDULED arrival.
+
+    fct_flight_events matches weather to the ACTUAL arrival, so a late flight gets a later
+    reading than it would have if on time. Matching on the schedule fixes the reading before
+    any delay happens.
+    """
+    readings = (
+        weather[["iata_code", "observed_at", "wind_speed"]]
+        .rename(columns={"iata_code": "arrival_airport", "wind_speed": "wind_at_schedule"})
+        .sort_values("observed_at")
+    )
+    ordered = flights.sort_values("arrival_scheduled_utc").reset_index()
+    matched = pd.merge_asof(
+        ordered, readings,
+        left_on="arrival_scheduled_utc", right_on="observed_at", by="arrival_airport",
+        direction="backward", tolerance=pd.Timedelta(minutes=max_lag_minutes),
+    )
+    return matched.set_index("index")["wind_at_schedule"].reindex(flights.index)
 
 
 def prepare(flights):
