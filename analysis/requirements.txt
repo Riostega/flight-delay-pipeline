@@ -1,0 +1,12 @@
+# Analysis-only dependencies, installed on the laptop and never on the EC2 host.
+# The host runs the pipeline on a t3.micro and has no use for these.
+#
+#   pip install -r requirements.txt -r analysis/requirements.txt
+
+statsmodels==0.15.0
+matplotlib==3.9.0
+jupyter==1.0.0
+
+# fetch_pandas_all() needs pyarrow, which the [pandas] extra installs. Without it the
+# notebook can't read from Snowflake.
+snowflake-connector-python[pandas]==4.7.1
