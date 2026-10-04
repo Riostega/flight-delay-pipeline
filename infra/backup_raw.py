@@ -26,7 +26,7 @@ import boto3
 from dotenv import dotenv_values
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-BUCKET = "flight-delay-pipeline-josh"
+DEFAULT_BUCKET = "flight-delay-pipeline-josh"
 PREFIXES = ("raw/flights/", "raw/weather/")
 
 
@@ -37,21 +37,24 @@ def main():
     if not env.get("AWS_ACCESS_KEY_ID"):
         sys.exit(f"No AWS credentials in {REPO_ROOT / '.env'}")
 
+    # Same source as every other script, so renaming the bucket in .env cannot
+    # leave the backup quietly mirroring the old one.
+    bucket = (env.get("S3_BUCKET_NAME") or DEFAULT_BUCKET).strip()
     s3 = boto3.client(
         "s3",
         aws_access_key_id=env["AWS_ACCESS_KEY_ID"],
         aws_secret_access_key=env["AWS_SECRET_ACCESS_KEY"],
-        region_name=env.get("AWS_REGION", "us-east-2"),
+        region_name=(env.get("AWS_REGION") or "us-east-2").strip(),
     )
 
-    print(f"bucket:      s3://{BUCKET}")
+    print(f"bucket:      s3://{bucket}")
     print(f"destination: {destination}\n")
 
     downloaded = skipped = failed = 0
     total_bytes = 0
 
     for prefix in PREFIXES:
-        for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=prefix):
+        for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
             for obj in page.get("Contents", []):
                 key = obj["Key"]
                 target = destination / key
@@ -64,7 +67,7 @@ def main():
 
                 target.parent.mkdir(parents=True, exist_ok=True)
                 try:
-                    s3.download_file(BUCKET, key, str(target))
+                    s3.download_file(bucket, key, str(target))
                     downloaded += 1
                     total_bytes += obj["Size"]
                 except Exception as exc:  # keep going — one bad object is not a failed backup
@@ -79,8 +82,15 @@ def main():
         print(f"FAILED on {failed} — re-run to retry")
         sys.exit(1)
 
-    local = sum(1 for p in destination.rglob("*") if p.is_file())
-    print(f"backup now holds {local} files")
+    # Count only the mirrored prefixes. The destination folder can hold other
+    # things too (warehouse_export/ CSVs, .DS_Store), and counting those made
+    # the total look like it should match S3 when it never could.
+    listed = downloaded + skipped
+    local = sum(
+        1 for prefix in PREFIXES for p in (destination / prefix).rglob("*")
+        if p.is_file() and not p.name.startswith(".")
+    )
+    print(f"S3 listed {listed} objects under {', '.join(PREFIXES)}; backup holds {local} files there")
 
 
 if __name__ == "__main__":

@@ -3,7 +3,8 @@
 # trial expires and the secrets are removed.
 #
 # Models are built into a separate CI schema so a test run cannot disturb the
-# production models. Sources are read from PUBLIC either way.
+# production models. Sources are read from PUBLIC either way, and the dashboard
+# smoke test then renders against the models this run just built in CI.
 name: dbt build
 
 on:
@@ -11,6 +12,18 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+
+# Every run builds into the same CI schema and drops it at the end. Two runs at
+# once (a merge to main and a PR push, say) would have one run's teardown drop
+# the schema under the other, failing it for no reason in the code. One fixed
+# group for all branches, and queued rather than cancelled.
+concurrency:
+  group: dbt-build-ci-schema
+  cancel-in-progress: false
+
+# Nothing here writes to the repo.
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -82,8 +95,11 @@ jobs:
 
       - name: Dashboard renders
         # compileall proves the file parses; this proves it actually runs
-        # against real data. Renamed columns and formatting faults only surface
-        # here.
+        # against real data. It reads the models this run just built in CI, not
+        # production's PUBLIC copies, so a PR that renames a column the
+        # dashboard uses fails here, before merge. Only the raw VARIANT tables,
+        # which dbt never builds, are read from PUBLIC. Must stay before the
+        # step that drops the CI schema.
         if: steps.check.outputs.ready == 'true'
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
@@ -91,7 +107,8 @@ jobs:
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_SCHEMA: PUBLIC
+          SNOWFLAKE_SCHEMA: CI
+          SNOWFLAKE_RAW_SCHEMA: PUBLIC
         run: python dashboard/smoke_test.py
 
       - name: Drop the CI schema

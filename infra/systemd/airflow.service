@@ -17,6 +17,15 @@ Environment="PATH=/home/ubuntu/airflow-venv/bin:/usr/local/bin:/usr/bin:/bin"
 # and dbt pin conflicting dependencies.
 Environment="PIPELINE_PYTHON=/home/ubuntu/pipeline-venv/bin/python"
 Environment="PIPELINE_DBT=/home/ubuntu/pipeline-venv/bin/dbt"
+# The UI is only ever reached through an SSH tunnel to localhost:8080, so the
+# API server listens on loopback only. The security group is then a second
+# layer, not the only one: a port-8080 rule added while debugging would still
+# expose nothing. (The log servers on 8793/8794 always bind to every interface,
+# Airflow has no setting for them, and they only answer requests signed with
+# Airflow's secret key. Keep those ports closed in the security group too.)
+Environment="AIRFLOW__API__HOST=127.0.0.1"
+# dags_folder and load_examples are set in airflow.cfg by bootstrap.sh, not
+# here, so that `airflow` typed over SSH sees the same DAG folder as this unit.
 
 ExecStart=/home/ubuntu/airflow-venv/bin/airflow standalone
 Restart=always

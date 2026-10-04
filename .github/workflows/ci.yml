@@ -2,7 +2,7 @@
 # Snowflake trial lapses. Catches broken refs and Jinja errors (dbt parse
 # renders Jinja but never sends SQL to a warehouse, so malformed SQL inside a
 # model is caught by dbt-build.yml, not here),
-# malformed schema.yml, and Python syntax problems.
+# malformed schema.yml, Python syntax problems, and DAGs that fail to import.
 name: CI
 
 on:
@@ -10,6 +10,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+
+# Neither job writes to the repo. Declared here so the workflow stays read-only
+# even if the repository's default token permissions are ever widened.
+permissions:
+  contents: read
 
 jobs:
   validate:
@@ -26,9 +31,11 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Python syntax
-        # Includes dags/: parses the DAG files without an Airflow install,
-        # catching syntax errors before they reach the scheduler.
-        run: python -m compileall -q pipeline infra dags dashboard
+        # Syntax only: compileall parses each file but imports nothing, so an
+        # import error or a wrong operator argument in dags/ passes here. The
+        # dags job below catches those. analysis/ is included because both
+        # notebooks import analysis/flights_data.py.
+        run: python -m compileall -q pipeline infra dags dashboard analysis
 
       - name: dbt profile (dummy)
         # dbt parse validates the project without connecting, so placeholder
@@ -54,3 +61,38 @@ jobs:
       - name: dbt parse
         working-directory: dbt
         run: dbt parse
+
+  dags:
+    # Imports the DAGs with a real Airflow, the way the scheduler does, and
+    # fails on any import error or if either DAG is missing. Without this those
+    # only surface on the host, after deployment, via the watchdog. A separate
+    # job with its own environment, because Airflow and dbt pin conflicting
+    # dependencies, so requirements.txt is deliberately NOT installed here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Airflow
+        # Same version and constraints file as infra/bootstrap.sh installs on
+        # the host. Change both together.
+        run: >-
+          pip install "apache-airflow==3.3.1"
+          --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-3.3.1/constraints-3.12.txt"
+
+      - name: DAGs import cleanly
+        env:
+          AIRFLOW_HOME: ${{ runner.temp }}/airflow
+          AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+        run: |
+          python - <<'EOF'
+          from airflow.dag_processing.dagbag import DagBag
+          bag = DagBag(dag_folder="dags")
+          assert not bag.import_errors, bag.import_errors
+          missing = {"flight_pipeline_daily", "weather_hourly"} - set(bag.dag_ids)
+          assert not missing, f"DAGs missing: {missing}"
+          print("OK:", sorted(bag.dag_ids))
+          EOF

@@ -14,8 +14,10 @@
 requests==2.34.2
 python-dotenv==1.2.2
 
-# S3 raw zone. botocore arrives pinned with boto3 and supplies the exception
-# types the infra scripts catch.
+# S3 raw zone. boto3 pulls in botocore, which supplies the exception types the
+# infra scripts catch. Only the top-level packages here are pinned: boto3 lets
+# botocore float within a compatible 1.43.x range, so the host and the laptop
+# can end up on different botocore patch versions.
 boto3==1.43.57
 
 # Snowflake load

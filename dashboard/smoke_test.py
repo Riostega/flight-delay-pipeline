@@ -2,12 +2,19 @@
 
 Streamlit's AppTest executes the whole script the way a real session would, so
 this catches what a syntax check cannot: a renamed column, a type that will not
-format, a query that no longer compiles. Both dashboard defects found during
-development — Decimal refusing to multiply with a float, and a palette validated
-against the wrong surface — were invisible to compileall and would have been
-caught here.
+format, a query that no longer compiles. The Decimal-times-float TypeError found
+during development would have failed here.
 
-Needs Snowflake credentials, so it runs in the workflow that has them.
+It checks that the page renders, not how it looks. A visual defect raises
+nothing and passes: the earlier palette bug (light colours drawn on the dark
+surface because theme detection fell back to light) would still pass. That is
+held by .streamlit/config.toml together with theme_mode() in app.py.
+
+In CI (dbt-build.yml) it reads the models that run just built in the CI schema,
+so a PR that renames a column the dashboard uses fails before it is merged.
+
+Needs Snowflake credentials, so it runs in the workflow that has them. Run it
+from the repository root so .streamlit/config.toml is picked up:
 
     python3 dashboard/smoke_test.py
 """

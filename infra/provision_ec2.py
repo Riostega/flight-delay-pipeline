@@ -1,13 +1,23 @@
 """Provision the EC2 host that runs the pipeline.
 
-Creates, in order: an IAM role granting S3 access to the raw zone, an SSH key
+Creates, in order: an IAM role that can add files to the raw zone, an SSH key
 pair, a security group allowing SSH from one address only, and a t3.micro
 instance. Everything except the instance itself is free, so resources are
 created first and the instance launch is gated behind --launch.
 
-Credentials come from .env.admin (gitignored, deleted once provisioning is
-done). The instance itself gets no credentials on disk — it assumes the IAM
-role instead, so there is nothing on the box worth stealing.
+Credentials come from .env.admin (gitignored; keep it chmod 600). It is kept
+after provisioning because allow_my_ip.py and terminate_ec2.py use it too.
+Delete it, and use the EC2 console for those two jobs, once the project is done.
+
+The instance gets no AWS keys on disk. It assumes the IAM role instead, and the
+role can only list and add files under raw/ in the one bucket: it cannot read
+or delete what is already there (and an overwrite keeps the old copy, because
+the bucket is versioned). That does NOT mean there is nothing on the box worth
+stealing. The host's .env (and the dbt profile made from it) holds the
+Snowflake password, for a user with the trial account's ACCOUNTADMIN role, plus
+the Slack webhook, the heartbeat URL and both API keys.
+A compromised host is a compromised Snowflake account, which is why SSH is
+locked to one address and the Airflow UI is never opened to the internet.
 
     python3 infra/provision_ec2.py            # create supporting resources
     python3 infra/provision_ec2.py --launch   # ...and launch the instance
@@ -65,7 +75,14 @@ def my_ip():
 
 
 def ensure_role():
-    """Role the instance assumes, scoped to this project's bucket only."""
+    """Role the instance assumes: list and add files under raw/, nothing else.
+
+    The host only ever calls list_objects_v2 (the quota check) and put_object
+    (landing a file). No GetObject, and above all no DeleteObject: a compromised
+    host can then add junk but cannot destroy the source of truth. Leaving out
+    DeleteObjectVersion and PutBucketVersioning is what keeps bucket versioning a
+    real backstop, because the host cannot remove old versions or switch it off.
+    """
     trust = {
         "Version": "2012-10-17",
         "Statement": [{
@@ -76,11 +93,25 @@ def ensure_role():
     }
     policy = {
         "Version": "2012-10-17",
-        "Statement": [{
-            "Effect": "Allow",
-            "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"],
-            "Resource": [f"arn:aws:s3:::{BUCKET}", f"arn:aws:s3:::{BUCKET}/*"],
-        }],
+        "Statement": [
+            {
+                # The quota check lists raw/flights/YYYY-MM. If this were scoped
+                # wrongly the check would not fail loudly: it prints "budget
+                # check unavailable; proceeding", so confirm the quota line
+                # after changing it.
+                "Sid": "ListRawForBudgetCheck",
+                "Effect": "Allow",
+                "Action": "s3:ListBucket",
+                "Resource": f"arn:aws:s3:::{BUCKET}",
+                "Condition": {"StringLike": {"s3:prefix": ["raw/*"]}},
+            },
+            {
+                "Sid": "LandRawFiles",
+                "Effect": "Allow",
+                "Action": "s3:PutObject",
+                "Resource": f"arn:aws:s3:::{BUCKET}/raw/*",
+            },
+        ],
     }
     try:
         iam.create_role(RoleName=ROLE_NAME, AssumeRolePolicyDocument=json.dumps(trust))
@@ -89,7 +120,7 @@ def ensure_role():
         print(f"  role {ROLE_NAME} already exists")
 
     iam.put_role_policy(RoleName=ROLE_NAME, PolicyName=f"{NAME}-s3", PolicyDocument=json.dumps(policy))
-    print(f"  attached S3 policy scoped to {BUCKET}")
+    print(f"  attached S3 policy: list and add under s3://{BUCKET}/raw/ (no read, no delete)")
 
     try:
         iam.create_instance_profile(InstanceProfileName=PROFILE_NAME)
@@ -115,20 +146,39 @@ def ensure_key_pair():
     with an unhelpful error from run_instances.
     """
     local = os.path.exists(KEY_PATH)
-    try:
-        ec2.describe_key_pairs(KeyNames=[KEY_NAME])
-        remote = True
-    except ClientError:
-        remote = False
+    # A filter query returns an empty list when the pair does not exist, so any
+    # real error (no permission, throttling) still raises instead of being read
+    # as "no key pair" — which would lead to the advice below to delete a key.
+    remote = bool(ec2.describe_key_pairs(
+        Filters=[{"Name": "key-name", "Values": [KEY_NAME]}]
+    )["KeyPairs"])
 
     if local and remote:
         print(f"  key pair present locally and in AWS ({KEY_PATH})")
         return
     if local and not remote:
+        # Key pairs are regional. A wrong AWS_REGION in .env looks exactly like a
+        # missing key pair, and deleting the file then would throw away the only
+        # key to a host that is running fine in the right region.
+        users = [
+            i["InstanceId"]
+            for r in ec2.describe_instances(Filters=[
+                {"Name": "key-name", "Values": [KEY_NAME]},
+                {"Name": "instance-state-name", "Values": ["pending", "running", "stopping", "stopped"]},
+            ])["Reservations"]
+            for i in r["Instances"]
+        ]
+        if users:
+            sys.exit(
+                f"Private key exists at {KEY_PATH}, and instance(s) {', '.join(users)} in {REGION} "
+                f"still use '{KEY_NAME}', but the key pair itself is gone from AWS.\n"
+                "Keep the local file: it is the only way into those instances."
+            )
         sys.exit(
-            f"Private key exists at {KEY_PATH} but no '{KEY_NAME}' key pair exists in AWS.\n"
-            "Delete the local file to create a fresh pair — but note that any instance "
-            "launched with the old key will no longer be reachable."
+            f"Private key exists at {KEY_PATH} but no '{KEY_NAME}' key pair exists in AWS region {REGION}.\n"
+            "Key pairs are regional, so first confirm AWS_REGION in .env is the region your "
+            "instance runs in. Only if it is, move the local file aside (for example to "
+            f"{KEY_PATH}.bak, rather than deleting it) and re-run to create a fresh pair."
         )
     if remote and not local:
         sys.exit(
@@ -140,9 +190,12 @@ def ensure_key_pair():
 
     r = ec2.create_key_pair(KeyName=KEY_NAME, KeyType="ed25519")
     os.makedirs(os.path.dirname(KEY_PATH), exist_ok=True)
-    with open(KEY_PATH, "w") as f:
+    # Created read-only for this user from the start, rather than written with
+    # the default (world-readable) mode and tightened afterwards. O_EXCL is safe:
+    # the checks above have already exited if the file exists.
+    fd = os.open(KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+    with os.fdopen(fd, "w") as f:
         f.write(r["KeyMaterial"])
-    os.chmod(KEY_PATH, 0o400)
     print(f"  created key pair, private key saved to {KEY_PATH} (chmod 400)")
 
 
@@ -185,7 +238,10 @@ def ensure_security_group():
     # from one address", so make that true rather than aspirational.
     current = ec2.describe_security_groups(GroupIds=[sg])["SecurityGroups"][0]
     for perm in current["IpPermissions"]:
-        if perm.get("FromPort") != 22:
+        # Only plain tcp/22 rules, the kind this script creates. Revoking needs
+        # an exact match, so a 22-80 range here would crash the revoke; edit
+        # anything unusual in the console (allow_my_ip.py reports such rules).
+        if (perm.get("IpProtocol"), perm.get("FromPort"), perm.get("ToPort")) != ("tcp", 22, 22):
             continue
         stale = [r for r in perm.get("IpRanges", []) if r["CidrIp"] != f"{ip}/32"]
         for rng in stale:
@@ -258,6 +314,15 @@ def launch(profile, sg, ami):
 
 
 if __name__ == "__main__":
+    # Checked explicitly, as allow_my_ip.py does. Otherwise empty credentials
+    # reach boto3 and the first IAM call fails with "InvalidClientTokenId",
+    # which reads like a bad key rather than a missing file.
+    if not kw["aws_access_key_id"] or not kw["aws_secret_access_key"]:
+        sys.exit(
+            f"No admin credentials in {REPO_ROOT / '.env.admin'}.\n"
+            "Create it with AWS_ADMIN_ACCESS_KEY_ID / AWS_ADMIN_SECRET_ACCESS_KEY from an "
+            "IAM admin user (chmod 600), then re-run."
+        )
     if not BUCKET:
         sys.exit("S3_BUCKET_NAME missing from .env")
     print(f"region {REGION}, bucket {BUCKET}\n")

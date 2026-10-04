@@ -29,18 +29,26 @@ env = dotenv_values(REPO_ROOT / ".env")
 admin = dotenv_values(REPO_ROOT / ".env.admin")
 region = (env.get("AWS_REGION") or "us-east-2").strip()
 
-if not admin.get("AWS_ADMIN_ACCESS_KEY_ID"):
+key = (admin.get("AWS_ADMIN_ACCESS_KEY_ID") or "").strip()
+secret = (admin.get("AWS_ADMIN_SECRET_ACCESS_KEY") or "").strip()
+if not key or not secret:
     sys.exit(
-        "No .env.admin found.\n"
+        "No admin credentials in .env.admin.\n"
         "Terminate from the console: EC2 > Instances > select > Instance state > Terminate."
     )
 
 ec2 = boto3.client(
     "ec2",
-    aws_access_key_id=admin["AWS_ADMIN_ACCESS_KEY_ID"].strip(),
-    aws_secret_access_key=admin["AWS_ADMIN_SECRET_ACCESS_KEY"].strip(),
+    aws_access_key_id=key,
+    aws_secret_access_key=secret,
     region_name=region,
 )
+
+# The region decides where this looks. A wrong AWS_REGION in .env would find
+# nothing while the real host keeps running (and billing) somewhere else, so say
+# which region was searched and where that came from.
+source = "from .env" if env.get("AWS_REGION") else "default; AWS_REGION is not set in .env"
+print(f"region {region} ({source})")
 
 res = ec2.describe_instances(Filters=[
     {"Name": "tag:Name", "Values": [NAME]},
@@ -49,7 +57,10 @@ res = ec2.describe_instances(Filters=[
 
 instances = [i for r in res for i in r["Instances"]]
 if not instances:
-    print("No running instances tagged", NAME, "- nothing is billing.")
+    print(
+        f"No instances tagged Name={NAME} (pending/running/stopping/stopped) in {region}.\n"
+        "If the host should exist, check AWS_REGION in .env or look in the EC2 console."
+    )
     sys.exit(0)
 
 for i in instances:
@@ -63,5 +74,5 @@ ids = [i["InstanceId"] for i in instances]
 ec2.terminate_instances(InstanceIds=ids)
 print(f"\nTerminating {', '.join(ids)} ...")
 ec2.get_waiter("instance_terminated").wait(InstanceIds=ids)
-print("Terminated. EC2 billing has stopped.")
+print(f"Terminated. This instance's EC2 billing in {region} has stopped.")
 print("S3 and Snowflake are untouched. Rebuild with: python3 infra/provision_ec2.py --launch")

@@ -1,4 +1,8 @@
-.env
+# Every credential file and any copy of one (.env.admin, a .env.old-trial2 made
+# before a Snowflake migration, ...). Only the blank template is published.
+.env*
+!.env.example
+*.pem
 __pycache__/
 *.pyc
 .venv/
@@ -8,12 +12,16 @@ logs/
 # Personal notes — not part of the published project
 INTERVIEW_NOTES.md
 
-# Temporary provisioning credentials — delete after EC2 setup
-.env.admin
-
 # Local working notes
 CLAUDE.md
 .watchdog_state.json
 
 # Personal SQL drills — not part of the published project
 sql_practice.py
+
+# Notebook autosaves can hold outputs from earlier runs
+.ipynb_checkpoints/
+
+# OS and local tool files
+.DS_Store
+.claude/

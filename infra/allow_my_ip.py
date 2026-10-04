@@ -57,10 +57,13 @@ if not groups:
 sg = groups[0]
 sgid = sg["GroupId"]
 
+# Only plain IPv4 tcp/22 rules, the kind this script and provision_ec2.py
+# create. Revoking needs an exact match, so anything else (a 22-80 range, an
+# IPv6 or "All traffic" rule) is left alone here and reported at the end.
 existing = [
     r["CidrIp"]
     for p in sg["IpPermissions"]
-    if p.get("FromPort") == 22
+    if (p.get("IpProtocol"), p.get("FromPort"), p.get("ToPort")) == ("tcp", 22, 22)
     for r in p.get("IpRanges", [])
 ]
 
@@ -87,3 +90,30 @@ for stale in [c for c in existing if c != cidr]:
     print(f"revoked {stale}")
 
 print("\nSSH should work now.")
+
+# The group is meant to allow exactly one thing: SSH from this address. Report
+# anything else, such as an IPv6 or "All traffic" rule added in the console
+# while debugging, rather than letting "SSH from one address" quietly stop being
+# true. Reported, not deleted: this script did not create those rules, and
+# someone may have added one on purpose.
+sg = ec2.describe_security_groups(GroupIds=[sgid])["SecurityGroups"][0]
+unexpected = []
+for p in sg["IpPermissions"]:
+    proto, lo, hi = p.get("IpProtocol"), p.get("FromPort"), p.get("ToPort")
+    ports = "all traffic" if proto == "-1" else f"{proto} {lo}" + ("" if hi == lo else f"-{hi}")
+    sources = (
+        [r["CidrIp"] for r in p.get("IpRanges", [])]
+        + [r["CidrIpv6"] for r in p.get("Ipv6Ranges", [])]
+        + [r["PrefixListId"] for r in p.get("PrefixListIds", [])]
+        + [g["GroupId"] for g in p.get("UserIdGroupPairs", [])]
+    )
+    for src in sources:
+        if not (proto == "tcp" and lo == hi == 22 and src == cidr):
+            unexpected.append(f"{ports} from {src}")
+
+if unexpected:
+    print(f"\nWARNING: {SG_NAME} allows more than SSH from {cidr}:")
+    for rule in unexpected:
+        print(f"  {rule}")
+    print("Remove these in the EC2 console unless they are there on purpose.")
+    sys.exit(1)
