@@ -214,9 +214,10 @@ the one bucket and nothing else: no reads, no deletes. That narrower policy take
 bucket-scoped policy it was created with.
 
 The host is not secret-free, though. Its `.env` (mode 600) holds the Snowflake password, both
-API keys, the Slack webhook and the heartbeat URLs. Until the least-privilege `PIPELINE_ROLE`
-is applied (see Deployment), that Snowflake password belongs to a user with ACCOUNTADMIN, so the
-host's `.env` is the most sensitive file in the project.
+API keys, the Slack webhook and the heartbeat URLs. Since 4 October 2026 that Snowflake password
+belongs to `PIPELINE_SVC`, a service user that holds only the least-privilege `PIPELINE_ROLE` (see
+Deployment). It can load, build and read the pipeline's schema, and nothing else: it cannot switch
+to ACCOUNTADMIN, create databases or touch users.
 
 Making the AWS half true required separating two things that had been conflated. The scheduled
 job originally ran the full Snowflake setup script, which recreates external stages — and
@@ -383,7 +384,7 @@ being analysed, and drops it afterwards in a step that always runs.
 | Load (Snowflake) | Complete |
 | Transform (dbt) | Complete — staging models, airport dimension, fact table with weather join, 48 data tests |
 | Orchestrate (Airflow) | Complete — two DAGs on decoupled schedules, running under `systemd` on EC2 |
-| Infrastructure | Complete — scripted provisioning, IAM role, versioned raw zone. Least-privilege Snowflake role written but not yet applied |
+| Infrastructure | Complete — scripted provisioning, IAM role, versioned raw zone. Least-privilege Snowflake role applied (4 Oct 2026) |
 | Testing and CI | Complete — two workflows on every push |
 | Analysis | First pass done on September data (exploration and a pre-registered regression): suggestive, not confirmed. Confirmation test on 3–21 October pulls pending |
 
@@ -450,8 +451,8 @@ The flights extract exits with distinct codes so a failure says what happened: 3
 monthly budget guard refused the run (expected late in a month), 4 when the guard could not list
 S3 and so refused rather than guess, and 5 when a whole source collected nothing. (Not 1, because
 Python exits 1 on any crash, and a crash should not read as an empty API response.) The guard
-counts the flight files landed this calendar month (UTC), which assumes AviationStack's quota
-resets on the 1st; check the reset date on the AviationStack dashboard.
+counts the flight files landed this calendar month (UTC), matching AviationStack's quota, which
+resets on the 1st.
 
 ## Deployment
 
@@ -519,11 +520,12 @@ An internet-facing Airflow can trigger arbitrary DAGs, so it is never exposed di
 worker log ports (8793/8794) do listen on all interfaces, so they must stay closed in the security
 group.
 
-### Switching to the least-privilege Snowflake role — not yet applied
+### The least-privilege Snowflake role — applied 4 October 2026
 
 Section 6 of `snowflake_setup.sql` defines `PIPELINE_ROLE`: it can use the warehouse, read the
 two stages, and own the tables and views in the pipeline's schema, which is everything the load,
-dbt and the watchdog need. Today they still run as the trial user's default role, ACCOUNTADMIN.
+dbt and the watchdog need. The host runs as `PIPELINE_SVC` with this role; the laptop and CI
+still use the admin user. On a new Snowflake account, repeat these steps:
 To switch:
 
 1. **On the laptop**, run `python3 pipeline/run_snowflake_setup.py`. It needs the AWS keys,
@@ -675,8 +677,8 @@ journalctl -u pipeline-watchdog.service -n 20     # what it last found
   them, but on 4 October 2026 one killed it (see Monitoring). The watchdog now catches and
   restarts a dead scheduler. The cause would go away with Postgres as Airflow's database
   and the scheduler run as its own service, which hasn't been done, given the `t3.micro`'s memory.
-- **The pipeline still connects to Snowflake as ACCOUNTADMIN.** The least-privilege role is
-  written but not yet applied (see Deployment).
+- **CI and the laptop still connect to Snowflake as the admin user.** Only the host was moved to
+  the least-privilege service user; CI needs a workflow change first (see Deployment).
 
 ## Repository structure
 
