@@ -11,9 +11,23 @@ to ignore the channel that is supposed to carry real failures.
 
 If you change a schedule in dags/, change the matching value here in the same
 commit. That is the whole reason this module exists.
+
+The same numbers are applied to slightly different measures, which normally
+agree to within an hour or so:
+  - the dashboard: the newest arrival in fct_flight_events, the newest weather
+    observation;
+  - the watchdog: the newest flight FILE landed (overall and per airport), the
+    newest arrival in fct_flight_events (the dashboard's measure), and the
+    newest weather observation (overall and per airport).
 """
 
-# weather_hourly — "0 * * * *". One missed run plus slack.
+# weather_hourly — "0 * * * *". Measured in minutes from the newest observation
+# (OpenWeatherMap's own timestamp, a few minutes before each pull lands). So
+# it fires once about two hourly runs in a row have been missed and the third
+# has not landed yet. The watchdog only looks every 2 hours, so a weather gap
+# is reported 3-5 hours after the last good pull, and a shorter gap that
+# recovers on its own between two checks is not reported at all. A failed run
+# still alerts immediately through the task-failure callback.
 WEATHER_STALE_HOURS = 3
 WEATHER_STALE_MINUTES = WEATHER_STALE_HOURS * 60
 

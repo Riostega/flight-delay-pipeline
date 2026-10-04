@@ -37,7 +37,7 @@ if missing:
     )
 
 try:
-    conn = snowflake.connector.connect(
+    settings = dict(
         account=os.getenv("SNOWFLAKE_ACCOUNT").strip(),
         user=os.getenv("SNOWFLAKE_USER").strip(),
         password=os.getenv("SNOWFLAKE_PASSWORD").strip(),
@@ -45,6 +45,10 @@ try:
         database=os.getenv("SNOWFLAKE_DATABASE").strip(),
         schema=os.getenv("SNOWFLAKE_SCHEMA").strip(),
     )
+    # Optional, as in the pipeline: test the role the pipeline will use.
+    if (os.getenv("SNOWFLAKE_ROLE") or "").strip():
+        settings["role"] = os.getenv("SNOWFLAKE_ROLE").strip()
+    conn = snowflake.connector.connect(**settings)
 except Exception as e:
     sys.exit(
         f"Could not connect to Snowflake:\n  {e}\n\n"

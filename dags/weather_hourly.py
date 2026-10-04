@@ -1,8 +1,8 @@
 """Hourly weather collection.
 
 Separate from the flight DAG because the two APIs have quotas differing by
-orders of magnitude. AviationStack caps flights at roughly daily; OpenWeatherMap
-allows far more, and dense weather observations are what make the eventual
+orders of magnitude. AviationStack's 100 requests a month allow a flights pull
+only every other day; OpenWeatherMap allows far more, and dense weather observations are what make the eventual
 flight/weather join meaningful rather than matching every flight to a single
 coarse daily reading.
 """
@@ -22,7 +22,7 @@ PYTHON = os.environ.get("PIPELINE_PYTHON", "/usr/local/bin/python3")
 # It depends only on os/requests, both of which Airflow already provides.
 if PROJECT_DIR not in sys.path:
     sys.path.insert(0, PROJECT_DIR)
-from pipeline.notify import slack_alert
+from pipeline.notify import slack_alert, slack_recovered
 
 with DAG(
     dag_id="weather_hourly",
@@ -36,17 +36,24 @@ with DAG(
     default_args={
         # Attached to default_args rather than to one task, so every task in
         # the DAG alerts — a failed load matters as much as a failed extract.
+        # slack_alert throttles repeats: an hourly DAG failing all night (say,
+        # Snowflake down or the trial expired) posts once, then at most every
+        # six hours, instead of 24 times a day. slack_recovered posts one line
+        # when a task that alerted succeeds again.
         "on_failure_callback": slack_alert,
+        "on_success_callback": slack_recovered,
+
+        # Without this a task that HANGS rather than fails blocks every later run
+        # forever: max_active_runs=1 means the stuck run holds the only slot, and
+        # nothing else bounds it. A hang is also invisible to the failure callback,
+        # which only fires on a task that actually finishes badly.
+        # Runs hourly, so anything still going after 15 minutes has hung rather than
+        # slowed, and would block the next run under max_active_runs=1.
+        "execution_timeout": timedelta(minutes=15),
+
         # Weather calls are cheap against the quota, so retry more freely than
         # the flights DAG does.
-        # Without this a task that HANGS rather than fails blocks every later run
-    # forever: max_active_runs=1 means the stuck run holds the only slot, and
-    # nothing else bounds it. A hang is also invisible to the failure callback,
-    # which only fires on a task that actually finishes badly.
-    # Runs hourly, so anything still going after 15 minutes has hung rather than
-    # slowed, and would block the next run under max_active_runs=1.
-    "execution_timeout": timedelta(minutes=15),
-    "retries": 2,
+        "retries": 2,
         "retry_delay": timedelta(minutes=2),
     },
     tags=["weather"],
@@ -66,6 +73,11 @@ with DAG(
         # healthy operation is worse than none, because it trains you to ignore
         # it. COPY INTO skips files it has already seen, so the extra runs cost
         # one brief warehouse wake-up.
+        #
+        # Despite the name, this loads FLIGHTS too: snowflake_load.sql runs both
+        # COPY statements. So new flight files reach Snowflake within the hour
+        # whichever DAG loads first, and at 09:00 this runs at the same moment as
+        # the flights DAG's own load (COPY's load history keeps that safe).
         bash_command=f"cd {PROJECT_DIR} && {PYTHON} pipeline/run_snowflake_setup.py snowflake_load.sql",
     )
 
