@@ -21,6 +21,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -56,6 +57,19 @@ FRESHNESS_INTERVAL_HOURS = 2
 # checks it is reporting on, and a missed ping is the signal anyway.
 HEARTBEAT_TIMEOUT = 10
 
+# The scheduler liveness check reads Airflow's SQLite database, which can be briefly
+# locked. One retry after a short pause keeps a momentary lock from looking like a
+# dead scheduler and triggering a needless restart.
+SCHEDULER_CHECK_ATTEMPTS = 2
+SCHEDULER_RETRY_SECONDS = 30
+
+# Automatic restarts (see restart_airflow_once): at most one per outage and none within
+# this many hours of the last; never in the window around the 09:00 UTC flights run; and
+# never while airflow.service is younger than STARTUP_GRACE_MINUTES.
+RESTART_COOLDOWN_HOURS = 3
+FLIGHTS_WINDOW_UTC = ("08:50", "09:30")
+STARTUP_GRACE_MINUTES = 10
+
 
 def _load_state():
     try:
@@ -71,7 +85,7 @@ def _save_state(state):
         pass  # A read-only disk is itself a problem, but not one to crash on.
 
 
-def check_scheduler():
+def check_airflow_service():
     """Airflow's own service state, per systemd."""
     try:
         out = subprocess.run(
@@ -83,6 +97,115 @@ def check_scheduler():
     except Exception as exc:
         return f"could not query airflow.service: {exc}"
     return None
+
+
+def minutes_since_airflow_started():
+    """How long airflow.service has been running, or None if systemd can't say.
+
+    Both systemd's monotonic timestamp and time.monotonic() count from boot on the
+    same clock, so their difference is the service's age.
+    """
+    try:
+        out = subprocess.run(
+            ["systemctl", "show", "airflow.service", "-p", "ActiveEnterTimestampMonotonic", "--value"],
+            capture_output=True, text=True, timeout=15,
+        ).stdout.strip()
+        return (time.monotonic() - int(out) / 1_000_000) / 60
+    except Exception:
+        return None
+
+
+def check_scheduler_alive(airflow_bin, airflow_home):
+    """Is a scheduler actually running and heartbeating, not just the service around it?
+
+    `airflow standalone` runs the scheduler as a child process and does not restart it
+    if it dies. On 2026-10-04 the scheduler crashed on a SQLite "database is locked"
+    error while its parent kept running, so systemd reported airflow.service as active
+    and nothing was scheduled for five and a half hours. check_airflow_service() could
+    not see that.
+
+    `airflow jobs check` asks Airflow's own database whether a scheduler on this host
+    has heartbeated in the last 30 seconds, which catches a dead scheduler and a hung
+    one alike. A failure is retried once, 30 seconds later, so a brief stall doesn't
+    count.
+
+    Returns (problem, definitely_dead). definitely_dead is True only when Airflow
+    answered "No alive jobs found" both times. Anything else (a timeout, a missing
+    binary, a locked database, two schedulers found) means the CHECK was inconclusive,
+    not that the scheduler is dead, and must never trigger a restart.
+    """
+    command = [airflow_bin, "jobs", "check", "--job-type", "SchedulerJob", "--local"]
+    env = dict(os.environ, AIRFLOW_HOME=airflow_home)
+    answers = []
+    for attempt in range(SCHEDULER_CHECK_ATTEMPTS):
+        try:
+            proc = subprocess.run(command, capture_output=True, text=True, timeout=120, env=env)
+            if proc.returncode == 0:
+                return None, False
+            output = "\n".join(part.strip() for part in (proc.stdout, proc.stderr) if part.strip())
+            answers.append(output.splitlines()[-1] if output else f"exit {proc.returncode}")
+        except Exception as exc:
+            answers.append(f"could not run airflow jobs check: {exc}")
+        if attempt < SCHEDULER_CHECK_ATTEMPTS - 1:
+            time.sleep(SCHEDULER_RETRY_SECONDS)
+
+    if all("No alive jobs found" in answer for answer in answers):
+        return "airflow.service is active but its scheduler is dead", True
+    return f"scheduler check inconclusive: {answers[-1][:150]}", False
+
+
+def in_flights_window(now):
+    """True around the 09:00 UTC flights run, when a restart could kill it mid-flight.
+
+    The flights run spends API quota as it goes and has no retries, so killing it
+    loses that day's flights for good. A dead scheduler at this hour isn't running the
+    flights anyway, and once restarted it still creates the missed run.
+    """
+    start, end = FLIGHTS_WINDOW_UTC
+    return start <= now.strftime("%H:%M") < end
+
+
+def restart_airflow_once(detail, state, now):
+    """Restart Airflow for a dead scheduler, at most once per outage, and say what was done.
+
+    A scheduler that dies again soon after a restart has a problem a restart won't fix,
+    and restarting on every tick would hide that behind a loop. So there is one
+    automatic restart per outage, and none within RESTART_COOLDOWN_HOURS of the last
+    one. After that it is left for a human.
+
+    The restart time is saved to the state file immediately, before restarting. If the
+    watchdog itself died partway through this tick, an unsaved stamp would let the next
+    tick restart again.
+    """
+    last = state.get("_last_restart")
+    if state.get("_restarted_this_outage"):
+        return f"{detail}. An automatic restart was already tried for this outage; needs a human"
+    if last:
+        try:
+            if now - datetime.fromisoformat(last) < timedelta(hours=RESTART_COOLDOWN_HOURS):
+                when = last[:16].replace("T", " ")
+                return f"{detail}. Airflow was already restarted automatically at {when} UTC; needs a human"
+        except ValueError:
+            pass
+    if in_flights_window(now):
+        return f"{detail}. Restart deferred until after the 09:00 UTC flights run"
+
+    state["_last_restart"] = now.isoformat()
+    state["_restarted_this_outage"] = True
+    _save_state(state)
+    try:
+        # sudo -n fails instead of prompting. It works because the Ubuntu image gives the
+        # ubuntu user password-free sudo; on a host without that, this reports FAILED.
+        proc = subprocess.run(
+            ["sudo", "-n", "systemctl", "restart", "airflow.service"],
+            capture_output=True, text=True, timeout=180,
+        )
+        error = None if proc.returncode == 0 else (proc.stderr.strip() or f"exit {proc.returncode}")
+    except Exception as exc:
+        error = str(exc)
+    if error:
+        return f"{detail}. Automatic restart FAILED: {error[:150]}"
+    return f"{detail}. Restarted Airflow automatically"
 
 
 def check_dag_health(airflow_python, airflow_home):
@@ -294,8 +417,29 @@ def main():
     now = datetime.now(timezone.utc)
     host = socket.gethostname()
 
+    # The airflow CLI lives next to the venv's python.
+    airflow_bin = str(Path(airflow_python).parent / "airflow")
+
+    # A stopped service is only reported, never restarted: someone may have stopped it
+    # on purpose, and systemd's own Restart=always already handles a crash of the service.
+    # The automatic restart is only for the case systemd can't see, where the service is
+    # running but the scheduler inside it is dead.
+    #
+    # A service that started in the last few minutes is skipped: its scheduler hasn't
+    # heartbeated yet, so it would look dead and be restarted for no reason.
+    airflow_problem = check_airflow_service()
+    age = minutes_since_airflow_started()
+    if airflow_problem is None and (age is None or age >= STARTUP_GRACE_MINUTES):
+        airflow_problem, definitely_dead = check_scheduler_alive(airflow_bin, airflow_home)
+        if definitely_dead:
+            airflow_problem = restart_airflow_once(airflow_problem, state, now)
+        elif airflow_problem is None:
+            # A scheduler confirmed alive ends any outage, so the next one may be
+            # restarted again (once the cooldown has passed).
+            state.pop("_restarted_this_outage", None)
+
     checks = {
-        "scheduler": check_scheduler(),
+        "scheduler": airflow_problem,
         "dags": check_dag_health(airflow_python, airflow_home),
     }
 
@@ -326,12 +470,18 @@ def main():
                 due = now - datetime.fromisoformat(last) > timedelta(hours=REALERT_HOURS)
             except ValueError:
                 due = True
+        # A problem whose wording changed is news, whatever the throttle says. Without
+        # this, "restarted Airflow automatically" followed half an hour later by "needs a
+        # human" would stay silent for the whole re-alert window.
+        if state.get(f"_detail:{name}") != detail:
+            due = True
         if due:
             # Only stamp the throttle when Slack actually took the message,
             # so a failed delivery is retried on the next tick instead of
             # being suppressed for the whole re-alert window.
             if post(f":warning: *pipeline watchdog* ({host})\n> {name}: {detail}"):
                 state[name] = now.isoformat()
+                state[f"_detail:{name}"] = detail
 
     for name in list(state):
         # Keys prefixed with "_" are bookkeeping, not conditions. And a check
@@ -344,6 +494,7 @@ def main():
         if name not in problems:
             post(f":white_check_mark: *pipeline watchdog* ({host})\n> {name}: recovered")
             state.pop(name, None)
+            state.pop(f"_detail:{name}", None)
 
     _save_state(state)
 

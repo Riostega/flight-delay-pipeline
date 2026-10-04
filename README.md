@@ -357,7 +357,8 @@ python3 infra/terminate_ec2.py --yes     # tear it down
 
 Provisioning is split so the free resources are created first and a mistake cannot leave
 something billing. On the host, Airflow runs under `systemd` with `Restart=always`, so it
-survives both crashes and reboots.
+survives a crash of the service and reboots. A scheduler that dies *inside* a running service
+is invisible to systemd; the watchdog catches that one (see Monitoring).
 
 `bootstrap.sh` exists because provisioning only ever produced a bare Ubuntu box. Everything
 that made it a *pipeline* host — two virtualenvs, the dbt profile, three `systemd` units — was
@@ -429,7 +430,8 @@ runs at all:
 | Failure | Caught by |
 |---|---|
 | A task runs and fails | `on_failure_callback` |
-| Scheduler wedged or stopped | watchdog (service state) |
+| Airflow service stopped | watchdog (service state) |
+| Scheduler dead or hung inside a running service | watchdog (scheduler heartbeat), with one automatic restart |
 | DAG dropped by an import error | watchdog (dagbag check) |
 | Data going stale while every task passes | watchdog (freshness) |
 | Instance stopped outright | external heartbeat (dead-man's switch) |
@@ -442,7 +444,27 @@ stops arriving. Set `HEARTBEAT_URL` in `.env` to any ping-URL service (healthche
 Cronitor, Better Stack); the watchdog appends `/fail` when a check fails so the service
 alerts immediately instead of waiting out the grace period. Unset, it is a no-op.
 
-Liveness checks are local and run every 30 minutes. The freshness check queries
+The scheduler row comes from a real outage. `airflow standalone` runs the scheduler as a
+child process and does not restart it. On 4 October 2026 the scheduler crashed on a SQLite
+"database is locked" error while its parent kept running, so systemd reported the service as
+active and nothing was scheduled for about five and a half hours. The only alert came from
+the freshness check, four hours in. The watchdog now asks Airflow directly whether a
+scheduler has heartbeated recently (`airflow jobs check`). If none has, it restarts Airflow
+and says so in the alert, within these limits:
+
+- **One restart per outage**, and none within three hours of the last. A scheduler that dies
+  again soon after a restart has a problem a restart won't fix, so it is left for a human.
+- **Only for a definitely dead scheduler.** If the check itself can't run (a timeout, a locked
+  database), that is reported, never acted on.
+- **Not around the 09:00 UTC flights run** (08:50 to 09:30), where a restart could kill the
+  run mid-way and lose that day's flights. A dead scheduler there gets restarted on the next tick.
+- **Not in the first 10 minutes after Airflow starts**, before its scheduler has heartbeated.
+
+A problem whose wording changes, such as "restarted automatically" turning into "needs a
+human", always posts, whatever the six-hour re-alert throttle says.
+
+Liveness checks (service state, scheduler heartbeat, dagbag) are local and run every 30
+minutes, so a dead scheduler is caught and restarted within about half an hour. The freshness check queries
 Snowflake, which wakes the warehouse for its 60-second minimum billing period, so it is
 gated to once every 2 hours — at the liveness cadence it would cost roughly 24 credits a
 month against a pipeline that consumes about 13. Alerts are throttled through a state
@@ -477,10 +499,14 @@ journalctl -u pipeline-watchdog.service -n 20     # what it last found
   studied from this data.
 - **The host runs on a `t3.micro`**, which has less memory than Airflow comfortably wants. It is
   viable with swap and has not been OOM-killed, but there is little headroom.
-- **A stopped instance reports nothing.** Failure alerting and the watchdog both
-  run on the host they monitor, so an instance that is stopped or unreachable produces
-  silence rather than an alert. Closing this needs an external dead-man's switch that
-  expects a periodic ping and alerts on its absence.
+- **A stopped instance is only caught from outside.** Failure alerting and the watchdog both
+  run on the host they monitor, so on their own a stopped or unreachable instance produces
+  silence. The external heartbeat (`HEARTBEAT_URL`) closes this, but only if it's configured.
+- **Airflow runs as `airflow standalone` on SQLite.** SQLite lets only one process write at
+  a time, so the scheduler regularly hits "database is locked" errors. It usually survives
+  them, but on 4 October 2026 one killed it (see Monitoring). The watchdog now catches and
+  restarts a dead scheduler. The cause would go away with Postgres as Airflow's database
+  and the scheduler run as its own service, which hasn't been done, given the `t3.micro`'s memory.
 
 ## Repository structure
 
