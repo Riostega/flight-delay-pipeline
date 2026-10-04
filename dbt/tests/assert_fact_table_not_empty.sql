@@ -1,6 +1,6 @@
 -- Every other test in this project asks "are these rows wrong?" and passes when
--- there are no rows to be wrong. An empty fct_flight_events therefore reports a
--- clean 31/31 while the pipeline has silently produced nothing — a broken filter,
+-- there are no rows to be wrong. An empty fct_flight_events therefore passes
+-- every other test while the pipeline has silently produced nothing — a broken filter,
 -- an empty staging view, or a load that never ran all look identical to health.
 --
 -- This asserts the one thing the others cannot: that the table exists AND that

@@ -9,7 +9,7 @@ sources:
     # Tying the source schema to target.schema makes CI look for raw tables in
     # the empty schema it just created.
     database: "{{ target.database }}"
-    schema: "{{ var('raw_schema', 'PUBLIC') }}"
+    schema: "{{ var('raw_schema') }}"
     tables:
       - name: stg_flights_raw
       - name: stg_weather_raw

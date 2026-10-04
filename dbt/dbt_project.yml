@@ -7,6 +7,16 @@ seed-paths: ["seeds"]
 test-paths: ["tests"]
 macro-paths: ["macros"]
 
+# Settings read with var(). Declared once here, with no inline defaults at the
+# call sites, so the model and the test that checks it cannot drift apart.
+vars:
+  # Oldest weather observation (minutes before actual arrival) still treated
+  # as describing the arrival. Weather is fetched hourly, so 120 allows one
+  # missed fetch. Used by fct_flight_events and assert_weather_lag_within_threshold.
+  weather_max_lag_minutes: 120
+  # Schema the COPY INTO loads the raw tables into (see sources.yml).
+  raw_schema: PUBLIC
+
 clean-targets:
   - "target"
   - "dbt_packages"

@@ -1,5 +1,3 @@
-{{ config(materialized='table') }}
-
 -- Grain: one row per physical flight, per scheduled departure.
 --
 -- AviationStack returns one record per *marketing* flight number, so a single
@@ -29,12 +27,14 @@ with scoped as (
     select *
     from {{ ref('stg_flights') }}
     where arrival_airport in (select iata_code from {{ ref('dim_airports') }})
-      -- Drop records carrying no flight identifier at all. AviationStack
-      -- returns airline_name = 'empty' with every designator null when it
-      -- cannot identify a flight; such a row has no carrier and no flight
+      -- Drop records carrying no flight identifier at all. When AviationStack
+      -- cannot identify a flight it usually returns airline_name = 'empty'
+      -- with every designator null; such a row has no carrier and no flight
       -- number, so it cannot be attributed to anything this table is about,
       -- and it would null the grain key. assert_unidentified_flight_rate
       -- fails if these ever stop being rare.
+      -- Not every 'empty' row is dropped: a few keep a designator (XN / XAR),
+      -- so they stay, with the carrier name set to 'Unknown' below.
       and coalesce(codeshare_flight_iata, flight_iata, flight_icao) is not null
 
 ),
@@ -43,15 +43,39 @@ attributed as (
 
     select
         *,
-        -- The carrier that actually flew the aircraft. With no codeshare, the
+        -- The flight that actually flew the aircraft. With no codeshare, the
         -- flight operates itself. Private operators carry no IATA designator,
-        -- so fall back to ICAO rather than dropping the row.
+        -- so fall back to ICAO rather than dropping the row. Some private and
+        -- cargo designators carry no flight number at all ('1I', 'CAO'), so
+        -- their key is just the prefix plus the scheduled minute;
+        -- assert_grain_key_single_route fails if that ever merges two flights.
         coalesce(codeshare_flight_iata, flight_iata, flight_icao) as operating_flight_iata,
-        initcap(coalesce(codeshare_airline_name, airline_name))   as operating_carrier_name,
 
-        -- Codeshare names arrive lowercase while direct names are title case;
-        -- without initcap the same carrier splits into two groups.
-        initcap(airline_name)                                     as marketing_carrier_name,
+        -- The code of the airline that actually flew. This, not the name, is
+        -- the carrier identity: AviationStack puts the mainline BRAND in the
+        -- name fields, so a Republic (YX) or SkyWest (OO) regional flight is
+        -- named "United Airlines" or "American Airlines", while its code says
+        -- who operated it. Codes also merge livery variants that the free-text
+        -- name splits ("Alaska Airlines (Oneworld Livery)").
+        -- Usually the two-letter IATA code; for operators with none it is the
+        -- three-letter ICAO code (Flexjet LXJ, PlaneSense CNS).
+        case
+            when codeshare_flight_iata is not null
+                then coalesce(codeshare_airline_iata, left(codeshare_flight_iata, 2))
+            else coalesce(airline_iata, airline_icao, left(flight_iata, 2), left(flight_icao, 3))
+        end                                                       as operating_carrier_code,
+
+        -- The brand the operating flight is sold under, for display. Codeshare
+        -- names arrive lowercase while direct names are title case; without
+        -- initcap the same carrier splits into two groups. The source's
+        -- placeholder 'empty' becomes 'Unknown' rather than a carrier called
+        -- "Empty".
+        coalesce(
+            initcap(nullif(lower(coalesce(codeshare_airline_name, airline_name)), 'empty')),
+            'Unknown'
+        )                                                         as operating_carrier_name,
+
+        coalesce(initcap(nullif(lower(airline_name), 'empty')), 'Unknown') as marketing_carrier_name,
         coalesce(flight_iata, flight_icao)                        as marketing_flight_iata
     from scoped
 
@@ -107,10 +131,15 @@ weather as (
 flight_events as (
 
     select
-        operating_flight_iata || '_' || to_varchar(departure_scheduled_local) as flight_event_key,
+        -- The timestamp format is spelled out so the key does not depend on the
+        -- session's TIMESTAMP_NTZ_OUTPUT_FORMAT. It is the format the keys have
+        -- always had, so keys saved in exports still join.
+        operating_flight_iata || '_'
+            || to_varchar(departure_scheduled_local, 'YYYY-MM-DD HH24:MI:SS.FF3') as flight_event_key,
 
         flight_date,
         operating_flight_iata,
+        operating_carrier_code,
         operating_carrier_name,
         marketing_flight_iata,
         marketing_carrier_name,
@@ -124,10 +153,11 @@ flight_events as (
         departure_timezone,
         arrival_timezone,
 
-        -- Local wall time is what the source reports and what delays are
-        -- measured in; UTC is what makes times comparable across airports and
-        -- joinable to weather. Both are kept, explicitly named, because
-        -- conflating them is precisely the bug this pair exists to prevent.
+        -- Local wall time is what the source reports; UTC is what makes times
+        -- comparable across airports and joinable to weather, and what delays
+        -- are measured in when the zone is known. Both are kept, explicitly
+        -- named, because conflating them is precisely the bug this pair exists
+        -- to prevent. *_actual_* are runway times, *_scheduled_* gate times.
         departure_scheduled_local,
         departure_actual_local,
         departure_scheduled_utc,
@@ -142,46 +172,84 @@ flight_events as (
 
         source_departure_delay_minutes,
         source_arrival_delay_minutes,
+        has_dst_ambiguous_time,
 
-        -- Some records pair an actual operation with a schedule that belongs to
-        -- a different leg or a different day, so the times are individually
-        -- plausible and jointly impossible. Two rules, each with its own reason:
+        -- Rows whose times cannot be trusted as a pair. The times are
+        -- individually plausible and jointly impossible, so the row is flagged
+        -- rather than dropped. Three causes:
+        --
+        --   (a) a schedule that belongs to a different leg or a different day.
+        --       PXG210 on 2026-09-25 "departed" five and a half hours early —
+        --       it flew the night before, against the next night's schedule.
+        --       UA7 was scheduled thirteen hours for a flight it made in three.
+        --   (b) the source re-timing arrival.scheduled to the actual landing
+        --       after a long departure delay. The flight leaves hours late and
+        --       "arrives on time" (GB3190: 333 min late off, 0 min late on).
+        --       This is most of the flagged rows; the milder cases are marked
+        --       by has_retimed_arrival_schedule below instead.
+        --   (c) a local time in the hour a daylight-saving change repeats or
+        --       skips, so the true instant, and any delay using it, may be off
+        --       by an hour (has_dst_ambiguous_time, from staging).
+        --
+        -- Two rules catch (a) and (b), each with its own reason:
         --
         --   a departure three hours early is not an operational event. An hour
         --   is: freight and charter regularly leave ahead of schedule once the
         --   load is closed, and those rows are internally consistent, arriving
-        --   early by about as much as they left early. Three hours is not, and
-        --   PXG210 on 2026-09-25 "departed" five and a half hours early — it
-        --   flew the night before, against the next night's schedule.
+        --   early by about as much as they left early. Three hours is not.
         --
         --   arrivals genuinely can be hours early on a tailwind, so those are
-        --   judged on elapsed time instead: if the gate-to-gate duration the
-        --   schedule implies differs from the duration actually flown by more
-        --   than four hours, the schedule is describing a different journey.
-        --   UA7 was scheduled thirteen hours for a flight it made in three.
+        --   judged on elapsed time instead: if the duration the schedule
+        --   implies differs from the duration actually flown by more than four
+        --   hours, the schedule is describing a different journey.
+        --   (actual elapsed - scheduled elapsed) is the same number as
+        --   (arrival delay - departure delay), because each airport's own clock
+        --   offset cancels out. Writing it with the delays means it also works
+        --   for the rows whose origin sends no timezone, which a UTC version
+        --   silently skipped (6R4260 on 2026-09-04 left 266 min late and
+        --   "arrived on time").
         --
         -- Four hours clears the widest genuine case in the sample: a freighter
         -- scheduled 12h17m that flew 9h25m with the jet stream behind it.
         coalesce(departure_delay_minutes < -180, false)
-        or coalesce(
-            abs(
-                datediff('minute', departure_actual_utc, arrival_actual_utc)
-                - datediff('minute', departure_scheduled_utc, arrival_scheduled_utc)
-            ) > 240,
-            false
-        )                                                        as has_suspect_times,
+        or coalesce(abs(arrival_delay_minutes - departure_delay_minutes) > 240, false)
+        or has_dst_ambiguous_time                                as has_suspect_times,
 
-        -- Flights routinely recover time in the air because airlines pad
-        -- published schedules; measuring arrival delay alone hides origin-side
-        -- operational failures.
+        -- Cause (b) above, below the four-hour line. The signature is a flight
+        -- that left an hour or more late yet "arrived" within a minute of its
+        -- schedule, because the source moved the schedule onto the landing.
+        -- Arrival delays of exactly 0 or 1 minute are two to three times as
+        -- common as their neighbours, almost all of the excess from cargo and
+        -- business-jet operators. A heuristic: a genuine flight that made up
+        -- an hour and landed on the minute is also caught. Kept separate from
+        -- has_suspect_times so that flag's meaning and the 1% rate test do
+        -- not change; using it in an analysis is a deliberate choice.
+        coalesce(
+            departure_delay_minutes >= 60 and abs(arrival_delay_minutes) <= 1,
+            false
+        )                                                        as has_retimed_arrival_schedule,
+
+        -- Scheduled gate-to-gate time minus actual runway-to-runway time
+        -- (because the actual times are wheels-off and wheels-on). So it is NOT
+        -- time made up in the air: it includes the taxi-out and the taxi-in,
+        -- plus whatever padding the schedule has. Taxiing is most of the
+        -- typical value, so treat it as an upper bound on schedule padding.
         departure_delay_minutes - arrival_delay_minutes          as minutes_recovered,
 
-        -- 15 minutes is the US DOT / BTS on-time threshold, which keeps these
-        -- figures comparable to published industry statistics. The comparison is
-        -- >= rather than >: BTS counts a flight as delayed when it is 15 minutes
-        -- OR MORE behind schedule, so a flight exactly 15 minutes late is late.
-        -- With > it was reported on time, which is the one value where this
-        -- table would have disagreed with the standard it claims to match.
+        -- 15 minutes is the US DOT / BTS threshold, and the comparison is >=
+        -- rather than >: BTS counts a flight as delayed when it is 15 minutes
+        -- OR MORE behind schedule, so exactly 15 minutes late is late.
+        --
+        -- The threshold matches BTS, the measurement does not. BTS compares
+        -- GATE arrival with the schedule; this table can only compare WHEELS-ON,
+        -- which is earlier by the taxi-in time. So is_delayed_arrival reads
+        -- lower than a BTS delay rate for the same flights, and taxi-in
+        -- differs by airport. To benchmark against BTS, compare with BTS
+        -- WheelsOn minus CRSArrTime, not ArrDelay.
+        --
+        -- is_delayed_departure is wheels-off 15+ minutes after the scheduled
+        -- push-back. That includes the whole taxi-out, so most flights qualify
+        -- and it is not a lateness measure.
         coalesce(departure_delay_minutes >= 15, false)           as is_delayed_departure,
         coalesce(arrival_delay_minutes >= 15, false)             as is_delayed_arrival
 
@@ -229,7 +297,7 @@ scored as (
     select
         *,
         coalesce(
-            weather_lag_minutes <= {{ var('weather_max_lag_minutes', 120) }},
+            weather_lag_minutes <= {{ var('weather_max_lag_minutes') }},
             false
         ) as has_weather_match
     from with_weather
@@ -241,6 +309,7 @@ select
     flight_date,
 
     operating_flight_iata,
+    operating_carrier_code,
     operating_carrier_name,
     marketing_flight_iata,
     marketing_carrier_name,
@@ -268,11 +337,13 @@ select
     is_delayed_departure,
     is_delayed_arrival,
 
-    -- The source's own delay figures, kept alongside the computed ones so the
-    -- two readings can be compared rather than one silently trusted.
+    -- The source's own delay figures, kept for reference. They are not an
+    -- independent reading: see the note in stg_flights.
     source_departure_delay_minutes,
     source_arrival_delay_minutes,
     has_suspect_times,
+    has_retimed_arrival_schedule,
+    has_dst_ambiguous_time,
 
     -- Weather conditions at the arrival airport around landing.
     --

@@ -13,14 +13,15 @@
 -- weather join itself. assert_fact_table_not_empty is what catches the join
 -- silently matching nothing.
 --
--- The threshold comes from the same variable the model uses. Hardcoding it here
--- would make this test fail on correct data the moment that variable changed.
+-- The threshold comes from the same variable the model uses, declared once in
+-- dbt_project.yml. Hardcoding it here would make this test fail on correct data
+-- the moment that variable changed.
 select
     flight_event_key,
     weather_lag_minutes,
     has_weather_match,
     weather_main
 from {{ ref('fct_flight_events') }}
-where (has_weather_match and weather_lag_minutes > {{ var('weather_max_lag_minutes', 120) }})
+where (has_weather_match and weather_lag_minutes > {{ var('weather_max_lag_minutes') }})
    or (not has_weather_match and weather_main is not null)
    or weather_lag_minutes < 0

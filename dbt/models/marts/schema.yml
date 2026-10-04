@@ -8,12 +8,19 @@ models:
       onto the operating flight, so carrier-level delay statistics reflect the
       airline that actually flew the aircraft rather than every airline that
       sold a seat on it.
+
+      Time semantics: *_scheduled_* are published gate times, *_actual_* are
+      runway times (wheels-off / wheels-on), because the source fills "actual"
+      with its runway reading. Delays therefore compare a runway time with a
+      gate time. The source also never returns an arrival more than about 56
+      minutes late, so late rates are lower bounds.
     columns:
       - name: flight_event_key
         description: >
-          Operating flight designator plus scheduled departure, in local time.
-          The grain key. Local rather than UTC because a small number of records
-          omit the timezone, which would leave a UTC key null.
+          Operating flight designator plus scheduled departure, in local time
+          (formatted YYYY-MM-DD HH24:MI:SS.FF3). The grain key. Local rather than
+          UTC because a small number of records omit the timezone, which would
+          leave a UTC key null.
         tests: [unique, not_null]
 
       - name: flight_date
@@ -25,21 +32,45 @@ models:
           Taken from the codeshare block when present, otherwise the record's own
           designator, falling back to ICAO for private operators with no IATA code.
         tests: [not_null]
+      - name: operating_carrier_code
+        description: >
+          Code of the airline that actually operated the flight: the two-letter
+          IATA code, or the three-letter ICAO code for operators without one.
+          Use this as the carrier identity. It separates regional operators
+          (Republic YX, SkyWest OO, Envoy MQ) from the mainline brands they fly
+          for, and merges livery variants that split the name.
+        tests: [not_null]
       - name: operating_carrier_name
-        description: Carrier that actually operated the flight, title-cased.
+        description: >
+          Brand the operating flight is sold under, title-cased, as the source
+          reports it. Not necessarily the operator: AviationStack reports the
+          mainline parent for regional flights (SkyWest is named American,
+          United, Delta or Alaska), and livery variants such as "Alaska Airlines
+          (Oneworld Livery)" appear as separate names. 'Unknown' where the
+          source sends its 'empty' placeholder. For the actual operator use
+          operating_carrier_code.
         tests: [not_null]
       - name: marketing_flight_iata
-        description: The flight number under which this record was sold.
+        description: >
+          One of the marketing labels seen for this flight, the alphabetically
+          first. A representative label, not the main seller, and not
+          necessarily the operator's own. Use operating_* for attribution.
       - name: marketing_carrier_name
-        description: Carrier that sold seats on the flight, which is often not the operator.
+        description: >
+          Carrier of that representative label, with the same caveat. 'Unknown'
+          where the source sends its 'empty' placeholder.
       - name: marketing_label_count
         description: >
-          Distinct marketing flight numbers observed for this physical flight.
-          Greater than one means several carriers sold seats on the same aircraft.
-          Observed range so far is one to nine.
+          Distinct marketing flight numbers observed for this physical flight in
+          the sampled pulls. Greater than one means several carriers sold seats
+          on the same aircraft.
         tests: [not_null]
       - name: has_codeshare_partners
-        description: Whether more than one marketing label was seen for this flight.
+        description: >
+          Whether more than one marketing label was seen for this flight. False
+          does NOT mean the flight is not a codeshare: a single observed label
+          can belong to another carrier (marketing_flight_iata differs from
+          operating_flight_iata), which happens for several hundred flights.
       - name: aircraft_icao24
         description: Transponder identifier of the airframe. Useful for confirming that codeshare siblings are one aircraft.
 
@@ -64,61 +95,106 @@ models:
           airport. Always present, and what the grain key is built on.
         tests: [not_null]
       - name: departure_actual_local
-        description: Actual departure, local wall time.
+        description: Actual departure (wheels-off, a runway time), local wall time.
       - name: departure_scheduled_utc
-        description: Scheduled departure in true UTC. Null when the source omits the origin timezone.
+        description: >
+          Scheduled departure in true UTC. Null when the source omits the origin
+          timezone, or when the local time falls in an hour a daylight-saving
+          change repeats or skips (see has_dst_ambiguous_time).
       - name: departure_actual_utc
-        description: Actual departure in true UTC.
+        description: Actual departure (wheels-off) in true UTC. Null in the same cases.
       - name: departure_delay_minutes
         description: >
-          Actual minus scheduled departure, in minutes. Positive is late,
-          negative early. Computed rather than read from the source, whose own
-          delay field is inconsistently populated.
+          Wheels-off minus scheduled gate departure, in minutes. Positive is
+          late, negative early. Includes the whole taxi-out, so it runs well
+          above a gate departure delay. Computed in UTC where the zone is known,
+          otherwise in local time; not read from the source's delay field.
 
       - name: arrival_scheduled_local
         description: Scheduled arrival, local wall time at the arrival airport.
       - name: arrival_actual_local
-        description: Actual arrival, local wall time.
+        description: Actual arrival (wheels-on, a runway time), local wall time.
       - name: arrival_scheduled_utc
-        description: Scheduled arrival in true UTC.
+        description: >
+          Scheduled arrival in true UTC. Null when the local time falls in an
+          hour a daylight-saving change repeats or skips.
       - name: arrival_actual_utc
         description: >
-          Actual arrival in true UTC, converted using the timezone the source
-          reports separately. What the weather join matches on.
+          Actual arrival (wheels-on) in true UTC, converted using the timezone
+          the source reports separately. What the weather join matches on. Null
+          in the same daylight-saving cases, so such a flight gets no weather.
       - name: arrival_delay_minutes
-        description: Actual minus scheduled arrival, in minutes.
+        description: >
+          Wheels-on minus scheduled gate arrival, in minutes. Leaves out
+          taxi-in, so it reads a few minutes earlier than gate arrival. The
+          source never returns an arrival more than about 56 minutes late (the
+          limit is in the raw payload, not this model), so the late tail is
+          missing and averages and late rates are lower bounds.
 
       - name: minutes_recovered
         description: >
-          Departure delay minus arrival delay. Positive means time was made up in
-          the air, which happens routinely because airlines pad published schedules.
+          Departure delay minus arrival delay, which equals scheduled
+          gate-to-gate time minus actual runway-to-runway time. It includes
+          taxi-out and taxi-in as well as any schedule padding, so it is NOT time
+          made up in the air; treat it as an upper bound on padding.
       - name: is_delayed_departure
-        description: Departure more than 15 minutes late.
+        description: >
+          Wheels-off 15 or more minutes after the scheduled gate departure.
+          Includes taxi-out, so most flights qualify; not a lateness measure and
+          not comparable to BTS departure delay.
         tests: [not_null]
       - name: is_delayed_arrival
         description: >
-          Arrival more than 15 minutes late — the US DOT on-time threshold, which
-          keeps these figures comparable to published industry statistics.
+          Wheels-on 15 or more minutes after the scheduled gate arrival. Uses the
+          US DOT / BTS threshold (exactly 15 counts as late), but BTS measures
+          gate arrival, which is later by the taxi-in time. So this rate is lower
+          than a BTS delay rate for the same flights, and not directly
+          comparable to published figures; compare with BTS WheelsOn minus
+          CRSArrTime instead. Also right-censored, see arrival_delay_minutes.
         tests: [not_null]
 
       - name: source_departure_delay_minutes
         description: >
-          The delay the source reports for departure. Inconsistently populated,
-          so it is not the measurement — but where present it is a second,
-          independent reading, and disagreement with the computed value means
-          one of the two inputs is wrong.
+          The delay the source reports for departure, kept for reference only.
+          Not an independent check: it often holds the arrival delay instead of
+          the departure delay.
 
       - name: source_arrival_delay_minutes
-        description: The same, for arrival.
+        description: >
+          The delay the source reports for arrival, kept for reference only.
+          Floored at 0, so it disagrees with the computed value for every early
+          arrival.
 
       - name: has_suspect_times
         description: >
-          True when the schedule on a record cannot belong to the operation it
-          is paired with: a departure more than an hour early, or an implied
-          gate-to-gate duration more than four hours from the one actually
-          flown. These are source defects rather than pipeline faults, so they
-          are flagged rather than dropped, and assert_suspect_time_rate fails if
-          they stop being rare.
+          True when the times on a record cannot be trusted as a pair. Three
+          causes: (a) a schedule from a different leg or day; (b) the source
+          re-timing the arrival schedule to the actual landing after a long
+          departure delay, which is most flagged rows; (c) a local time in an
+          hour a daylight-saving change repeats or skips. Rules: a departure
+          more than three hours early, arrival delay minus departure delay
+          (equivalently, flown duration minus scheduled duration) more than four
+          hours, or has_dst_ambiguous_time. Source defects rather than pipeline
+          faults, so flagged rather than dropped; assert_suspect_time_rate fails
+          if they stop being rare.
+        tests: [not_null]
+      - name: has_retimed_arrival_schedule
+        description: >
+          Heuristic for the milder form of cause (b) above: departed 60 or more
+          minutes late yet arrived within one minute of schedule, the signature
+          of the source moving arrival.scheduled onto the landing. Mostly cargo
+          and business-jet operators, where arrival delay is unreliable. It also
+          catches the odd genuine flight that recovered an hour, so treat it as
+          a sensitivity filter. Not part of has_suspect_times.
+        tests: [not_null]
+      - name: has_dst_ambiguous_time
+        description: >
+          True when any of the four local times falls in the hour a
+          daylight-saving change repeats (US: 01:00-01:59 on the first Sunday of
+          November) or skips (02:00-02:59 on the second Sunday of March). The
+          feed has no UTC offset, so the true instant is unknowable: its *_utc
+          value is null and any delay using it may be off by an hour. Included
+          in has_suspect_times.
         tests: [not_null]
 
       - name: weather_observed_at
@@ -133,7 +209,8 @@ models:
       - name: has_weather_match
         description: >
           True when an observation was found within weather_max_lag_minutes
-          (default 120) before arrival. False means every weather_* column is null.
+          (set under vars in dbt_project.yml) before arrival. False means every
+          weather_* column is null.
         tests: [not_null]
       - name: weather_main
         description: >

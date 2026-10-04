@@ -10,6 +10,12 @@ models:
       Timestamps are exposed twice. The source labels local wall time with a
       "+00:00" offset that is not true, so *_local is the reading as reported and
       *_utc is converted using the timezone the API supplies in a separate field.
+
+      The "actual" times are runway times: the source's actual equals its
+      actual_runway in every record checked, while "scheduled" is the published
+      gate time. Departure delay is wheels-off minus scheduled gate departure
+      (includes taxi-out); arrival delay is wheels-on minus scheduled gate
+      arrival (excludes taxi-in).
     columns:
       - name: flight_status
         description: Always "landed" — the extract filters on it, since only completed flights have final times.
@@ -27,15 +33,43 @@ models:
       - name: flight_date
         description: Flight date as reported by the source.
         tests: [not_null]
+      - name: departure_scheduled_utc
+        description: >
+          Scheduled departure in true UTC. Null when the source omits the
+          timezone, or when the local time falls in an hour a daylight-saving
+          change repeats or skips. The same rule applies to the other *_utc columns.
+      - name: has_dst_ambiguous_time
+        description: >
+          True when any of the four local times falls in a repeated or skipped
+          daylight-saving hour, so its true instant (and any delay using it) is
+          unknowable from this feed.
+        tests: [not_null]
       - name: departure_delay_minutes
-        description: Actual minus scheduled departure. Computed here rather than read from the source's unreliable delay field.
+        description: >
+          Wheels-off minus scheduled gate departure, in minutes. Computed in UTC
+          where the zone is known, otherwise in local time, rather than read
+          from the source's unreliable delay field.
       - name: arrival_delay_minutes
-        description: Actual minus scheduled arrival.
+        description: >
+          Wheels-on minus scheduled gate arrival, in minutes. The source never
+          returns an arrival more than about 56 minutes late, so the late tail
+          is missing.
       - name: codeshare_flight_iata
         description: >
           Populated when this record is a marketing label for a flight operated
           by another carrier. Cast to string before any null check, because a
           JSON null inside a VARIANT is not SQL NULL.
+      - name: codeshare_airline_iata
+        description: >
+          IATA code of the airline operating the flight this marketing label
+          belongs to, upper-cased. Names the actual operator (YX, OO) where the
+          codeshare name gives the mainline brand.
+      - name: source_departure_delay_minutes
+        description: >
+          The source's own departure delay, for reference only. Often repeats
+          the arrival delay, so it is not an independent check.
+      - name: source_arrival_delay_minutes
+        description: The source's own arrival delay, for reference only. Floored at 0.
       - name: source_file
         description: The S3 object this row came from. Lineage back to the raw landing.
         tests: [not_null]
