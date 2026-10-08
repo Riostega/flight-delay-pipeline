@@ -329,7 +329,7 @@ different flight numbers. Left uncollapsed, that one flight would have counted t
 ## Testing and CI
 
 dbt runs 48 data tests against the modelled layer (as of 4 October 2026: 31 generic and 17
-singular), and two GitHub Actions workflows enforce them on every push and pull request.
+singular), and two GitHub Actions workflows enforce them on pull requests and pushes to main.
 
 **The load-bearing test is `unique` on `flight_event_key`.** It is the executable proof that the
 grain argument holds: if codeshare collapse or re-pull deduplication ever stopped working, it fails
@@ -385,7 +385,7 @@ being analysed, and drops it afterwards in a step that always runs.
 | Transform (dbt) | Complete — staging models, airport dimension, fact table with weather join, 48 data tests |
 | Orchestrate (Airflow) | Complete — two DAGs on decoupled schedules, running under `systemd` on EC2 |
 | Infrastructure | Complete — scripted provisioning, IAM role, versioned raw zone. Least-privilege Snowflake role applied (4 Oct 2026) |
-| Testing and CI | Complete — two workflows on every push |
+| Testing and CI | Complete — two workflows on PRs and pushes to main |
 | Analysis | First pass done on September data (exploration and a pre-registered regression): suggestive, not confirmed. Confirmation test on 3–21 October pulls pending |
 
 ## Setup

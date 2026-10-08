@@ -22,8 +22,8 @@ and the warehouse cannot disagree about which airports are in scope.
 `fct_flight_events` holds **one row per physical flight per scheduled departure**.
 
 AviationStack returns one record per *marketing* flight number, so a single aircraft
-appears once for every airline selling seats on it — in one sample, nine. Attributing
-one aircraft's delay to nine carriers would corrupt the carrier-reliability analysis
+appears once for every airline selling seats on it — up to ten (AA2690 into LAX,
+4 Sep 2026). Attributing one aircraft's delay to ten carriers would corrupt the carrier-reliability analysis
 this project exists to produce, so models collapse onto the operating flight, keyed on
 `coalesce(codeshare_flight_iata, flight_iata, flight_icao) + departure_scheduled`.
 
