@@ -294,10 +294,50 @@ def test_recovery_retried_when_slack_is_down(tick):
 
 
 def test_freshness_problem_is_carried_between_checks(tick):
-    tick.world["freshness"] = "flights are 57h stale"
+    # Slack refuses the first alert, so nothing but the carried result keeps it open.
+    tick.world["freshness"], tick.world["slack_ok"] = "flights are 57h stale", False
     assert tick()["heartbeats"] == [False]
-    # Not due again for 2 hours: the last result stands, so the heartbeat keeps failing
-    # even though check_freshness would now say all is well.
-    tick.world["freshness"] = None
-    assert tick(NOW + timedelta(minutes=30))["heartbeats"] == [False]
+    # Not due again for 2 hours: the last result stands, so the heartbeat keeps failing and
+    # the refused alert is retried, even though check_freshness would now say all is well.
+    tick.world["freshness"], tick.world["slack_ok"] = None, True
+    world = tick(NOW + timedelta(minutes=30))
+    assert world["heartbeats"] == [False]
+    assert any("freshness: flights are 57h stale" in post for post in world["posts"])
     assert tick(NOW + timedelta(hours=2, minutes=1))["heartbeats"] == [True]
+
+
+def test_stopped_service_is_reported_not_restarted(tick):
+    # Someone may have stopped it on purpose; systemd handles a crashed service itself.
+    tick.world["service"] = "airflow.service is `inactive`, not active"
+    tick.world["scheduler"] = ("airflow.service is active but its scheduler is dead", True)
+    world = tick()
+    assert world["scheduler_checked"] == 0 and world["restarts"] == []
+    assert "inactive" in world["posts"][0]
+
+
+def test_unknown_service_age_still_checks_the_scheduler(tick):
+    tick.world["age"] = None
+    assert tick()["scheduler_checked"] == 1
+
+
+def test_open_freshness_alert_survives_a_tick_that_did_not_check(tick):
+    # A state file from before the result was carried forward: an open alert, no result.
+    watchdog._save_state({"freshness": NOW.isoformat(), "_detail:freshness": "flights are 57h stale",
+                          "_last_freshness": NOW.isoformat()})
+    world = tick(NOW + timedelta(minutes=30))
+    assert world["heartbeats"] == [False] and world["posts"] == []
+    assert "freshness" in watchdog._load_state()
+
+
+def test_unsent_recovery_is_dropped_after_24_hours(tick):
+    watchdog._save_state({"_unannounced_recovery:dags": NOW.isoformat()})
+    tick.world["slack_ok"] = False
+    assert len(tick(NOW + timedelta(hours=23))["posts"]) == 1
+    assert tick(NOW + timedelta(hours=24, minutes=1))["posts"] == []
+    assert "_unannounced_recovery:dags" not in watchdog._load_state()
+
+
+def test_a_clean_import_clears_the_import_alarm_throttle(tick):
+    watchdog._save_state({"_import_error_alerted_at": 1.0})
+    tick()
+    assert "_import_error_alerted_at" not in watchdog._load_state()
