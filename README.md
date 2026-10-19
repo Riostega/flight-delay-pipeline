@@ -328,7 +328,7 @@ different flight numbers. Left uncollapsed, that one flight would have counted t
 
 ## Testing and CI
 
-dbt runs 48 data tests against the modelled layer (as of 4 October 2026: 31 generic and 17
+dbt runs 53 data tests against the modelled layer (as of 19 October 2026: 35 generic and 18
 singular), and two GitHub Actions workflows enforce them on pull requests and pushes to main.
 
 **The load-bearing test is `unique` on `flight_event_key`.** It is the executable proof that the
@@ -382,7 +382,7 @@ being analysed, and drops it afterwards in a step that always runs.
 | Extract | Complete |
 | Land (S3) | Complete |
 | Load (Snowflake) | Complete |
-| Transform (dbt) | Complete — staging models, airport dimension, fact table with weather join, 48 data tests |
+| Transform (dbt) | Complete — staging models, airport dimension, fact table with weather join, 53 data tests |
 | Orchestrate (Airflow) | Complete — two DAGs on decoupled schedules, running under `systemd` on EC2 |
 | Infrastructure | Complete — scripted provisioning, IAM role, versioned raw zone. Least-privilege Snowflake role applied (4 Oct 2026) |
 | Testing and CI | Complete — two workflows on PRs and pushes to main |

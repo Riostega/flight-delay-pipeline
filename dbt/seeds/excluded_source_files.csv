@@ -1,0 +1,6 @@
+source_file,reason,decided_on
+raw/flights/2026-10-19/ATL_183546_075360.json,Unscheduled re-run of the 19 Oct 09:00 UTC pull at 18:35 caused by the Airflow metadata database change; not one of the regular pulls,2026-10-19
+raw/flights/2026-10-19/EWR_183546_378692.json,Unscheduled re-run of the 19 Oct 09:00 UTC pull at 18:35 caused by the Airflow metadata database change; not one of the regular pulls,2026-10-19
+raw/flights/2026-10-19/LAX_183546_687177.json,Unscheduled re-run of the 19 Oct 09:00 UTC pull at 18:35 caused by the Airflow metadata database change; not one of the regular pulls,2026-10-19
+raw/flights/2026-10-19/MIA_183547_006163.json,Unscheduled re-run of the 19 Oct 09:00 UTC pull at 18:35 caused by the Airflow metadata database change; not one of the regular pulls,2026-10-19
+raw/flights/2026-10-19/SFO_183547_302329.json,Unscheduled re-run of the 19 Oct 09:00 UTC pull at 18:35 caused by the Airflow metadata database change; not one of the regular pulls,2026-10-19

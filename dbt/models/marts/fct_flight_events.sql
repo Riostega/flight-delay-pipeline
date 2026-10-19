@@ -36,6 +36,11 @@ with scoped as (
       -- Not every 'empty' row is dropped: a few keep a designator (XN / XAR),
       -- so they stay, with the carrier name set to 'Unknown' below.
       and coalesce(codeshare_flight_iata, flight_iata, flight_icao) is not null
+      -- Files from runs outside the sampling plan (excluded_source_files gives
+      -- each one's reason). Removed here, before re-pull dedup, so where an
+      -- excluded file and a regular pull saw the same flight, the regular
+      -- pull's record is the one that survives. S3 keeps the files.
+      and source_file not in (select source_file from {{ ref('excluded_source_files') }})
 
 ),
 
