@@ -2,7 +2,8 @@
 # Snowflake trial lapses. Catches broken refs and Jinja errors (dbt parse
 # renders Jinja but never sends SQL to a warehouse, so malformed SQL inside a
 # model is caught by dbt-build.yml, not here),
-# malformed schema.yml, Python syntax problems, and DAGs that fail to import.
+# malformed schema.yml, Python syntax problems, DAGs that fail to import, and
+# broken watchdog restart/alert logic (tests/test_watchdog.py).
 name: CI
 
 on:
@@ -35,7 +36,14 @@ jobs:
         # import error or a wrong operator argument in dags/ passes here. The
         # dags job below catches those. analysis/ is included because both
         # notebooks import analysis/flights_data.py.
-        run: python -m compileall -q pipeline infra dags dashboard analysis
+        run: python -m compileall -q pipeline infra dags dashboard analysis tests
+
+      - name: Watchdog tests
+        # The restart guards and alert bookkeeping, with systemd, Airflow, Slack
+        # and Snowflake all replaced, so no credentials are needed.
+        run: |
+          pip install pytest==8.3.3
+          python -m pytest -q tests
 
       - name: dbt profile (dummy)
         # dbt parse validates the project without connecting, so placeholder

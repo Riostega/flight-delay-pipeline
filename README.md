@@ -335,6 +335,12 @@ singular), and two GitHub Actions workflows enforce them on pull requests and pu
 grain argument holds: if codeshare collapse or re-pull deduplication ever stopped working, it fails
 immediately rather than quietly producing wrong averages.
 
+The watchdog's decisions have their own pytest suite (`tests/test_watchdog.py`, run in CI): the
+restart guards (once per outage, the 3-hour cooldown, the 08:50–09:30 UTC window, the startup grace,
+never on an inconclusive check, the restart recorded before it is attempted) and the alert
+bookkeeping (the 6-hour throttle, changed wording, retried posts and recoveries, carried freshness).
+Every outside call is replaced, so it needs no credentials.
+
 Staging carries tests too, which is what makes `dbt build` protective — a staging model that fails
 its tests never becomes the input to the fact table. Testing only the mart would let a bad source
 rebuild it before anything objected.
