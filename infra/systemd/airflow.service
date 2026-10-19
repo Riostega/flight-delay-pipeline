@@ -1,7 +1,10 @@
 [Unit]
 Description=Airflow (flight delay pipeline)
-After=network-online.target
-Wants=network-online.target
+# Airflow's metadata database is the local Postgres: start after it at boot, and
+# stop before it at shutdown. Wants= (not Requires=) so a Postgres restart does
+# not take Airflow down with it.
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
 
 [Service]
 Type=simple

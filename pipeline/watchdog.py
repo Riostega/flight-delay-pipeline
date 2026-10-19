@@ -140,9 +140,10 @@ FRESHNESS_INTERVAL_HOURS = 2
 # checks it is reporting on, and a missed ping is the signal anyway.
 HEARTBEAT_TIMEOUT = 10
 
-# The scheduler liveness check reads Airflow's SQLite database, which can be briefly
-# locked. One retry after a short pause keeps a momentary lock from looking like a
-# dead scheduler and triggering a needless restart.
+# The scheduler liveness check reads Airflow's metadata database (local Postgres since
+# 19 October 2026; SQLite before, which could be briefly locked). One retry after a short
+# pause keeps a momentary hiccup from looking like a dead scheduler and triggering a
+# needless restart.
 SCHEDULER_CHECK_ATTEMPTS = 2
 SCHEDULER_RETRY_SECONDS = 30
 

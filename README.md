@@ -545,6 +545,40 @@ To switch:
    `dbt-build.yml` currently hard-codes `role: ACCOUNTADMIN` and creates and drops its own `CI`
    schema, which `PIPELINE_ROLE` has no grant for.
 
+
+### Airflow's metadata database
+
+Airflow keeps its own bookkeeping, meaning which runs happened, task states and scheduler
+heartbeats, in a metadata database. It started on SQLite, which allows one writer at a time;
+on this host its "database is locked" errors killed the scheduler repeatedly (see Monitoring).
+Since 19 October 2026 it is a local PostgreSQL 16, set up by `bootstrap.sh`:
+
+- **Unreachable from outside.** It listens on `localhost` only, and the security group is unchanged.
+- **Least privilege.** The only network rule lets the `airflow` role reach the `airflow` database
+  with a scram-sha-256 password. The role is not a superuser and cannot create databases.
+- **The password is never written into config.** `bootstrap.sh` generates it once, writes the
+  connection URL to `~/airflow/db_url` (mode 600) and never prints it. Postgres itself is
+  sent only the scram verifier, never the plaintext, so it cannot end up in a server log. `airflow.cfg` holds only
+  `sql_alchemy_conn_cmd = cat ~/airflow/db_url`, so every Airflow process, the CLI and the
+  watchdog all read the same database without the secret appearing in the config file or the
+  systemd unit. The plain `sql_alchemy_conn` line is removed, because Airflow ranks it above
+  the `_cmd` setting.
+- **Sized for a 1 GB host.** 32 MB of shared buffers, at most 40 connections, Airflow pools of
+  2 (+3 overflow), and the executor capped at 4 workers. Before the switch (SQLite, 32 idle
+  workers): 322 MB available, 1.5 GB of swap in use. Half an hour after it: 387 MB and 1.1 GB,
+  with 10 Postgres connections. These are single readings that move around (one at 18:42 UTC,
+  just after the restart, showed 268 MB), so read it as "no worse, probably a little better",
+  not as a measured saving.
+
+The switch started Airflow on a fresh database: Airflow's own run history from the SQLite days
+is archived, not migrated. The pipeline's data lives in S3 and Snowflake and was untouched.
+One side effect, not anticipated in the plan: with no history, the scheduler treated that morning's
+09:00 flights run as never having happened and ran it again at 18:35 UTC. That cost 5 API
+calls (the month still fits the budget) and landed 5 extra files (`raw/flights/2026-10-19/*_1835*.json`),
+which are not one of the regular 09:00 pulls and must be kept out of the analysis. Any
+metadata database that doesn't know the latest run (a rebuilt host, or a rollback to SQLite)
+does the same, so after one, check the API budget and note the extra pull.
+
 ## Monitoring
 
 Two mechanisms, because they catch different failures.
@@ -609,6 +643,12 @@ and says so in the alert, within these limits:
 A problem whose wording changes, such as "restarted automatically" turning into "needs a
 human", always posts, whatever the six-hour re-alert throttle says.
 
+The restart treated the symptom. The cause was SQLite, Airflow's metadata database, which lets
+only one process write at a time: crashes went from one on 4 October to three on 18 October,
+when the watchdog had to escalate to a human once. On 19 October Airflow was moved onto a small
+local Postgres (see Deployment), which removes the lock contention. The watchdog stays as the
+safety net.
+
 Liveness checks (service state, scheduler heartbeat, dagbag) are local and run every 30
 minutes, so a dead scheduler is caught and restarted within about half an hour. The freshness check queries
 Snowflake, which wakes the warehouse for its 60-second minimum billing period, so it is
@@ -672,11 +712,12 @@ journalctl -u pipeline-watchdog.service -n 20     # what it last found
 - **A stopped instance is only caught from outside.** Failure alerting and the watchdog both
   run on the host they monitor, so on their own a stopped or unreachable instance produces
   silence. The external heartbeat (`HEARTBEAT_URL`) closes this, but only if it's configured.
-- **Airflow runs as `airflow standalone` on SQLite.** SQLite lets only one process write at
-  a time, so the scheduler regularly hits "database is locked" errors. It usually survives
-  them, but on 4 October 2026 one killed it (see Monitoring). The watchdog now catches and
-  restarts a dead scheduler. The cause would go away with Postgres as Airflow's database
-  and the scheduler run as its own service, which hasn't been done, given the `t3.micro`'s memory.
+- **Airflow runs as `airflow standalone`.** It is a convenience launcher that starts the
+  scheduler and the other components as child processes and does not restart one that dies;
+  the watchdog covers that. Running each component as its own systemd service would remove the
+  need, at the cost of more moving parts on a 1 GB host. (Its metadata moved off SQLite onto
+  Postgres on 19 October 2026, which removes the single-writer lock behind the errors that were
+  killing the scheduler.)
 - **CI and the laptop still connect to Snowflake as the admin user.** Only the host was moved to
   the least-privilege service user; CI needs a workflow change first (see Deployment).
 

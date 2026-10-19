@@ -180,10 +180,188 @@ else
     # The constraints file is what makes an Airflow install reproducible. Without
     # it pip resolves whatever is newest and the result differs by install date.
     "${AIRFLOW_VENV}/bin/pip" install --quiet \
-        "apache-airflow==${AIRFLOW_VERSION}" \
+        "apache-airflow[postgres]==${AIRFLOW_VERSION}" \
         --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_TAG}.txt"
     echo "  installed Airflow ${AIRFLOW_VERSION} (Python ${PYTHON_TAG})"
 fi
+
+# The Postgres driver comes with the [postgres] extra. A host installed before the
+# move to Postgres has the right Airflow version but no driver, so check for it.
+# Installing it only adds packages, so it is safe while Airflow is running.
+if ! "${AIRFLOW_VENV}/bin/python" -c "import psycopg2" 2>/dev/null; then
+    PYTHON_TAG=$("${AIRFLOW_VENV}/bin/python" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')
+    "${AIRFLOW_VENV}/bin/pip" install --quiet \
+        "apache-airflow[postgres]==${AIRFLOW_VERSION}" \
+        --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_TAG}.txt"
+    echo "  installed the Airflow Postgres driver"
+fi
+
+# ------------------------------------------------- airflow metadata database
+# Airflow keeps its own bookkeeping (runs, task states, scheduler heartbeats) in a
+# database. SQLite allows one writer at a time, and on this host its "database is
+# locked" errors killed the scheduler repeatedly (4, 9 and 18 October 2026), so
+# Airflow uses a small local Postgres instead.
+#
+# Security: Postgres listens on localhost only; the only network rule lets the
+# airflow role reach the airflow database with a scram password. That password is
+# generated here, written to one 0600 file (DB_URL_FILE) and never printed.
+# airflow.cfg holds only the command that reads the file (sql_alchemy_conn_cmd),
+# so every Airflow process, the CLI and the watchdog included, sees the same
+# database without the password appearing in config or the systemd unit.
+say "Airflow metadata database (Postgres)"
+
+DB_URL_FILE="${AIRFLOW_HOME}/db_url"
+mkdir -p "${AIRFLOW_HOME}"
+
+# Switching an existing host off SQLite restarts Airflow, which must not happen
+# around the 09:00 UTC flights run. Refuse before changing anything.
+needs_switch=0
+if [[ ! -f "${DB_URL_FILE}" ]] || grep -q '^sql_alchemy_conn = ' "${AIRFLOW_CFG}" 2>/dev/null; then
+    needs_switch=1
+fi
+if [[ ${needs_switch} -eq 1 ]] && systemctl is-active --quiet airflow.service && in_flights_window; then
+    echo "  this host still needs moving to Postgres, which restarts Airflow, but the" >&2
+    echo "  09:00 UTC flights run may be in progress. Re-run after 09:30 UTC." >&2
+    exit 1
+fi
+
+# Pinned to the version the host was built and tested with (Ubuntu 24.04's), so
+# the config directory below is known rather than guessed from what is installed.
+PG_VERSION=16
+PG_CONF_DIR="/etc/postgresql/${PG_VERSION}/main"
+if [[ ! -d "${PG_CONF_DIR}" ]]; then
+    # The lock timeout covers a first boot, when cloud-init may still hold apt.
+    sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 update -qq >/dev/null
+    sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq "postgresql-${PG_VERSION}" >/dev/null
+    echo "  installed PostgreSQL ${PG_VERSION}"
+fi
+[[ -d "${PG_CONF_DIR}" ]] || { echo "  ${PG_CONF_DIR} is missing after installing PostgreSQL ${PG_VERSION}" >&2; exit 1; }
+
+# The two managed files, written only when their content differs, so re-running
+# this script does not restart Postgres for nothing.
+pg_tmp=$(mktemp -d)
+cat > "${pg_tmp}/airflow.conf" <<'PGCONF'
+# Airflow metadata database on a 1 GB host. Managed by infra/bootstrap.sh.
+listen_addresses = 'localhost'      # never reachable from outside the host
+password_encryption = scram-sha-256
+max_connections = 40                # Airflow processes x small pools, with headroom
+shared_buffers = 32MB               # the whole metadata DB is a few MB
+effective_cache_size = 128MB
+work_mem = 2MB
+maintenance_work_mem = 16MB
+PGCONF
+cat > "${pg_tmp}/pg_hba.conf" <<'PGHBA'
+# Managed by infra/bootstrap.sh. Original: pg_hba.conf.orig
+# TYPE  DATABASE  USER      ADDRESS        METHOD
+local   all       postgres                 peer
+host    airflow   airflow   127.0.0.1/32   scram-sha-256
+host    airflow   airflow   ::1/128        scram-sha-256
+PGHBA
+pg_pending=()
+for pair in "airflow.conf:${PG_CONF_DIR}/conf.d/airflow.conf" "pg_hba.conf:${PG_CONF_DIR}/pg_hba.conf"; do
+    if ! sudo cmp -s "${pg_tmp}/${pair%%:*}" "${pair#*:}"; then
+        pg_pending+=("${pair}")
+    fi
+done
+# Applying them restarts Postgres, which a running Airflow on Postgres depends on.
+if [[ ${#pg_pending[@]} -gt 0 && ${needs_switch} -eq 0 ]] \
+        && systemctl is-active --quiet airflow.service && in_flights_window; then
+    echo "  Postgres config changed, which restarts Postgres under the running Airflow, but the" >&2
+    echo "  09:00 UTC flights run may be in progress. Re-run after 09:30 UTC." >&2
+    rm -rf "${pg_tmp}"
+    exit 1
+fi
+if [[ ! -f "${PG_CONF_DIR}/pg_hba.conf.orig" ]]; then
+    sudo cp -p "${PG_CONF_DIR}/pg_hba.conf" "${PG_CONF_DIR}/pg_hba.conf.orig"
+fi
+for pair in "${pg_pending[@]}"; do
+    sudo install -m 640 -o postgres -g postgres "${pg_tmp}/${pair%%:*}" "${pair#*:}"
+    echo "  wrote ${pair#*:}"
+done
+rm -rf "${pg_tmp}"
+if [[ ${#pg_pending[@]} -gt 0 ]]; then
+    sudo systemctl restart postgresql
+fi
+sudo systemctl enable --quiet --now postgresql
+
+# The role, the database and the password file are created together, once. If the
+# role exists but the file is gone, the password is unrecoverable; say so rather
+# than guess.
+if [[ ! -f "${DB_URL_FILE}" ]]; then
+    if [[ "$(sudo -u postgres psql -Atc "select 1 from pg_roles where rolname = 'airflow'")" == "1" ]]; then
+        echo "  the airflow Postgres role exists but ${DB_URL_FILE} is missing, so its password" >&2
+        echo "  is unknown. Set a new one by hand and write the connection URL to that file (mode 600)." >&2
+        exit 1
+    fi
+    python3 - "${DB_URL_FILE}" <<'PY'
+import base64, hashlib, hmac, os, secrets, string, subprocess, sys
+path = sys.argv[1]
+pw = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(40))
+# The file is written FIRST (0600 from the start, refusing to overwrite), so a
+# failure below can be undone completely instead of leaving a role whose password
+# nobody knows, which would block every re-run.
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+os.write(fd, f"postgresql+psycopg2://airflow:{pw}@localhost:5432/airflow".encode())
+os.close(fd)
+# Postgres is sent the SCRAM-SHA-256 verifier (the form it stores), never the
+# plaintext, so a failed statement that Postgres logs cannot leak the password.
+# The connection test after this block proves the verifier matches the file.
+b64 = lambda b: base64.b64encode(b).decode()
+salt, iterations = secrets.token_bytes(16), 4096
+salted = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt, iterations)
+stored_key = hashlib.sha256(hmac.new(salted, b"Client Key", "sha256").digest()).digest()
+server_key = hmac.new(salted, b"Server Key", "sha256").digest()
+verifier = f"SCRAM-SHA-256${iterations}:{b64(salt)}${b64(stored_key)}:{b64(server_key)}"
+psql = ["sudo", "-u", "postgres", "psql", "-q", "-v", "ON_ERROR_STOP=1"]
+def run(sql):
+    # On stdin, so nothing appears in a process listing.
+    subprocess.run(psql, input=sql, text=True, check=True, stdout=subprocess.DEVNULL)
+created = []
+try:
+    run(f"CREATE ROLE airflow LOGIN PASSWORD '{verifier}' "
+        "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;")
+    created.append("ROLE")
+    run("CREATE DATABASE airflow OWNER airflow;")
+    created.append("DATABASE")
+    run("REVOKE ALL ON DATABASE airflow FROM PUBLIC;")
+except subprocess.CalledProcessError:
+    # Undo only what this run created, never a database that was already there.
+    for kind in reversed(created):
+        subprocess.run(psql, input=f"DROP {kind} IF EXISTS airflow;", text=True,
+                       stdout=subprocess.DEVNULL)
+    os.remove(path)
+    sys.exit("  creating the airflow role and database failed; undone, safe to re-run")
+PY
+    echo "  created the airflow role, database and ${DB_URL_FILE} (mode 600)"
+fi
+chmod 600 "${DB_URL_FILE}"
+# By default every role may connect to these two; pg_hba already blocks it, and
+# this removes the grant as well. Repeating a REVOKE is harmless.
+sudo -u postgres psql -q -v ON_ERROR_STOP=1 \
+    -c "REVOKE CONNECT ON DATABASE postgres, template1 FROM PUBLIC;" >/dev/null
+
+# Prove the file, the password and the network rule all work, without printing them.
+"${AIRFLOW_VENV}/bin/python" - "${DB_URL_FILE}" <<'PY'
+import sys
+from urllib.parse import urlparse
+import psycopg2
+u = urlparse(open(sys.argv[1]).read().strip().replace("postgresql+psycopg2", "postgresql"))
+conn = psycopg2.connect(host=u.hostname, port=u.port, dbname=u.path[1:], user=u.username, password=u.password)
+cur = conn.cursor()
+cur.execute("select rolsuper from pg_roles where rolname = current_user")
+if cur.fetchone()[0]:
+    sys.exit("  the airflow role must not be a superuser")
+print("  connection OK (airflow role, not a superuser, localhost only)")
+PY
+
+# Create or update Airflow's tables in Postgres on every run (a quick no-op when
+# they are current, and it retries one that failed last time). It runs BEFORE
+# airflow.cfg is pointed at Postgres, through an environment setting, which Airflow
+# ranks above any value in airflow.cfg. So the config never points at a database
+# whose tables don't exist yet, and a running Airflow on SQLite is not affected.
+AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD="cat ${DB_URL_FILE}" "${AIRFLOW_VENV}/bin/airflow" db migrate >/dev/null 2>&1 \
+    || { echo "  airflow db migrate failed against Postgres" >&2; exit 1; }
+echo "  Airflow's tables are in place in Postgres"
 
 # ------------------------------------------------------------ airflow.cfg
 # Airflow's defaults look for DAGs in $AIRFLOW_HOME/dags (which does not exist
@@ -203,24 +381,53 @@ if [[ ! -f "${AIRFLOW_CFG}" ]]; then
 fi
 
 cfg_before=$(sha256sum "${AIRFLOW_CFG}")
+
+# Point Airflow at Postgres (see the section above). The plain sql_alchemy_conn
+# line has to go, not just be overridden: Airflow ranks a value written in
+# airflow.cfg above a *_cmd setting, so leaving it would keep SQLite in use.
+if grep -q '^sql_alchemy_conn = ' "${AIRFLOW_CFG}"; then
+    # The watchdog reads airflow.cfg on every tick, and would report a "dead"
+    # scheduler between this edit and the restart below (Airflow is still on
+    # SQLite until then). Pause it, and resume it however this script ends.
+    sudo systemctl stop pipeline-watchdog.timer 2>/dev/null || true
+    trap 'sudo systemctl start pipeline-watchdog.timer >/dev/null 2>&1 || true' EXIT
+    # A half-done rollback can leave a sql_alchemy_conn_cmd line behind; a second
+    # one makes airflow.cfg unparseable (DuplicateOptionError), so remove any first.
+    sed -i -E '/^sql_alchemy_conn_cmd = /d' "${AIRFLOW_CFG}"
+    sed -i -E "s|^sql_alchemy_conn = .*|# sql_alchemy_conn: replaced by sql_alchemy_conn_cmd (Postgres)\nsql_alchemy_conn_cmd = cat ${DB_URL_FILE}|" "${AIRFLOW_CFG}"
+fi
+# Small pools and a 4-worker executor: this is a 1 GB host running two small DAGs,
+# and every idle worker or pooled connection costs memory.
 # dags_are_paused_at_creation only applies to a DAG Airflow has never seen, so
 # on a fresh host both DAGs start running on their own, while a DAG someone
 # deliberately paused on an existing host stays paused.
 sed -i -E \
+    -e "s|^sql_alchemy_pool_size = .*|sql_alchemy_pool_size = 2|" \
+    -e "s|^sql_alchemy_max_overflow = .*|sql_alchemy_max_overflow = 3|" \
+    -e "s|^parallelism = .*|parallelism = 4|" \
     -e "s|^dags_folder = .*|dags_folder = ${REPO_ROOT}/dags|" \
     -e "s|^load_examples = .*|load_examples = False|" \
     -e "s|^dags_are_paused_at_creation = .*|dags_are_paused_at_creation = False|" \
     "${AIRFLOW_CFG}"
-for line in "dags_folder = ${REPO_ROOT}/dags" "load_examples = False" "dags_are_paused_at_creation = False"; do
-    if ! grep -qxF "${line}" "${AIRFLOW_CFG}"; then
-        echo "  could not set '${line}' in ${AIRFLOW_CFG} — set it under [core] by hand" >&2
+# Record the need to restart BEFORE the checks below, so a check that fails
+# cannot lose it: the marker makes the next run restart even though the file
+# will already look unchanged by then.
+if [[ "$(sha256sum "${AIRFLOW_CFG}")" != "${cfg_before}" ]]; then
+    echo "  airflow.cfg changed"
+    need_restart
+fi
+for line in "sql_alchemy_conn_cmd = cat ${DB_URL_FILE}" "sql_alchemy_pool_size = 2" \
+            "sql_alchemy_max_overflow = 3" "parallelism = 4" \
+            "dags_folder = ${REPO_ROOT}/dags" "load_examples = False" "dags_are_paused_at_creation = False"; do
+    if [[ "$(grep -cxF "${line}" "${AIRFLOW_CFG}")" != "1" ]]; then
+        echo "  could not set '${line}' in ${AIRFLOW_CFG} exactly once; set it by hand" >&2
         exit 1
     fi
     echo "  ${line}"
 done
-if [[ "$(sha256sum "${AIRFLOW_CFG}")" != "${cfg_before}" ]]; then
-    echo "  airflow.cfg changed"
-    need_restart
+if grep -q '^sql_alchemy_conn = ' "${AIRFLOW_CFG}"; then
+    echo "  airflow.cfg still has a plain sql_alchemy_conn line, which would win over the Postgres one" >&2
+    exit 1
 fi
 
 # --------------------------------------------------------------- dbt profile
