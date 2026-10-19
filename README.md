@@ -436,7 +436,7 @@ python3 pipeline/run_snowflake_setup.py                     # create warehouse/d
 python3 pipeline/run_snowflake_setup.py snowflake_load.sql  # load new files (no AWS credentials)
 
 cd dbt                                 # dbt must run from the project directory
-dbt seed                               # load dim_airports
+dbt seed                               # load dim_airports and excluded_source_files
 dbt build                              # run models and tests in dependency order
 
 streamlit run dashboard/app.py         # from the repository root
@@ -559,7 +559,7 @@ Since 19 October 2026 it is a local PostgreSQL 16, set up by `bootstrap.sh`:
 - **The password is never written into config.** `bootstrap.sh` generates it once, writes the
   connection URL to `~/airflow/db_url` (mode 600) and never prints it. Postgres itself is
   sent only the scram verifier, never the plaintext, so it cannot end up in a server log. `airflow.cfg` holds only
-  `sql_alchemy_conn_cmd = cat ~/airflow/db_url`, so every Airflow process, the CLI and the
+  `sql_alchemy_conn_cmd = cat /home/ubuntu/airflow/db_url` (an absolute path: Airflow runs the command without a shell, so `~` is not expanded), so every Airflow process, the CLI and the
   watchdog all read the same database without the secret appearing in the config file or the
   systemd unit. The plain `sql_alchemy_conn` line is removed, because Airflow ranks it above
   the `_cmd` setting.
@@ -575,9 +575,11 @@ is archived, not migrated. The pipeline's data lives in S3 and Snowflake and was
 One side effect, not anticipated in the plan: with no history, the scheduler treated that morning's
 09:00 flights run as never having happened and ran it again at 18:35 UTC. That cost 5 API
 calls (the month still fits the budget) and landed 5 extra files (`raw/flights/2026-10-19/*_1835*.json`),
-which are not one of the regular 09:00 pulls and must be kept out of the analysis. Any
-metadata database that doesn't know the latest run (a rebuilt host, or a rollback to SQLite)
-does the same, so after one, check the API budget and note the extra pull.
+which are not one of the regular 09:00 pulls. They are listed in the seed
+`dbt/seeds/excluded_source_files.csv` and removed in `fct_flight_events` before re-pull dedup;
+S3 and `stg_flights` keep them. Any metadata database that doesn't know the latest run (a rebuilt
+host, or a rollback to SQLite) does the same, so after one, check the API budget and add the
+extra pull's files to that seed, with the reason.
 
 ## Monitoring
 
@@ -738,6 +740,7 @@ dbt/
   models/staging/            sources.yml, schema.yml, stg_flights, stg_weather
   models/marts/              fct_flight_events and its tests
   seeds/dim_airports.csv     Airport scope and coordinates — read by dbt, the extractor and the watchdog
+  seeds/excluded_source_files.csv  Raw files kept out of the fact table, each with its reason
   tests/                     Singular tests
   macros/                    drop_ci_schema (CI teardown), local_time (DST-safe UTC conversion)
 
