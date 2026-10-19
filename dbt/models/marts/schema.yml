@@ -233,6 +233,24 @@ models:
         description: Cloud cover, percent.
 
 seeds:
+  - name: excluded_source_files
+    description: >
+      Raw flight files kept out of fct_flight_events, each with its reason and
+      the date that was decided. An explicit list rather than a rule (such as
+      "only 09:00 pulls"), so nothing is excluded that wasn't decided on: a time
+      rule would also drop the 4-5 September build-time pulls the analysis uses.
+      The files stay in S3 and in stg_flights.
+    columns:
+      - name: source_file
+        description: Path as stored in stg_flights.source_file (raw/flights/...).
+        tests: [unique, not_null]
+      - name: reason
+        description: Why the file is excluded.
+        tests: [not_null]
+      - name: decided_on
+        description: When the exclusion was decided (before the data was examined).
+        tests: [not_null]
+
   - name: dim_airports
     description: >
       Airports in scope, with coordinates. Read by dbt as a dimension and by
